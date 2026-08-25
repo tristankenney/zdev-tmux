@@ -262,3 +262,52 @@ func TestAttentionToStatus(t *testing.T) {
 		}
 	}
 }
+
+// The 2026-08-24 report: three sessions working for 20+ minutes, all showing
+// idle. Two independent causes, one per assertion here.
+//
+// PreToolUse was never installed, so "working" was stamped once per turn and
+// decayed after 180s. And even with the heartbeat wired, PreToolUse fires
+// BEFORE a tool runs — an observed `/bin/sleep 240` emits nothing for four
+// minutes, which no heartbeat interval can bridge. The window has to.
+func TestWorkingSurvivesALongSingleToolCall(t *testing.T) {
+	now := int64(1_700_000_000)
+
+	// A four-minute tool call with the title parked at a bare "claude" — the
+	// exact shape of the screenshot that reported this.
+	longCall := AttentionInputs{
+		Titles:     []string{"claude", "shell"},
+		HookWorkTS: now - 240,
+	}
+	if got := DeriveAttention(longCall, now); got.Attention != proto.AttWorking {
+		t.Errorf("a 240s tool call must still read as working, got %q", got.Attention)
+	}
+
+	// A twenty-minute turn, heartbeat rate-limited to once a minute: the
+	// newest stamp is at most ZDEV_HEARTBEAT_MIN_SEC old, so this is what an
+	// actively-working long turn actually looks like.
+	heartbeat := AttentionInputs{
+		Titles:     []string{"claude"},
+		HookWorkTS: now - 60,
+	}
+	if got := DeriveAttention(heartbeat, now); got.Attention != proto.AttWorking {
+		t.Errorf("a rate-limited heartbeat must read as working, got %q", got.Attention)
+	}
+
+	// The window must comfortably exceed the longest plausible single call.
+	// If someone lowers it back under a few minutes, this fails loudly.
+	if hookWorkFreshSec < 300 {
+		t.Errorf("hookWorkFreshSec = %d: too short to bridge one long tool call",
+			hookWorkFreshSec)
+	}
+
+	// It must still decay eventually — a hard-crashed agent that fired no
+	// Stop and no SessionEnd cannot latch "working" forever.
+	crashed := AttentionInputs{
+		Titles:     []string{"claude"},
+		HookWorkTS: now - hookWorkFreshSec - 1,
+	}
+	if got := DeriveAttention(crashed, now); got.Attention == proto.AttWorking {
+		t.Error("a stamp past the window must stop deriving working")
+	}
+}

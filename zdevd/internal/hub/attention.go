@@ -152,14 +152,34 @@ func DeriveAttention(in AttentionInputs, now int64) AttentionResult {
 const hookWaitFreshSec = 30
 
 // hookWorkFreshSec bounds how long a HookWorkTS stamp keeps deriving
-// AttWorking without a refresh. The PreToolUse hook re-stamps on every tool
-// call, so an actively-working turn stays fresh continuously; the window only
-// has to bridge the longest gap between hook fires — a blocking PostToolUse
-// fixer with no intervening tool. 180s covers the measured worst case (a
-// multi-file `composer run fix`/rector pass) with margin. Past it, a turn
-// that somehow fired no Stop (hard crash) decays to the title path rather
-// than latching "working" forever; death detection also reclaims it.
-const hookWorkFreshSec = 180
+// AttWorking without a refresh.
+//
+// The old value (180s) rested on a premise that was false for as long as it
+// existed: "the PreToolUse hook re-stamps on every tool call". PreToolUse was
+// never installed (fixed 2026-08-24, bin/zdev-install-hooks), so "working" was
+// stamped once per turn at UserPromptSubmit and decayed three minutes later —
+// and because Claude Code parks its pane title at a bare "claude", the title
+// fallback could not rescue it. Three sessions working for 20+ minutes showed
+// as idle; the operator reported it as missing state, which is exactly what it
+// was.
+//
+// Two things now keep a stamp fresh, and the window has to survive the gap
+// BOTH can leave:
+//
+//	the PreToolUse heartbeat bridges a long SEQUENCE of tool calls, but it
+//	  fires BEFORE a tool runs — so a single long call (an observed
+//	  `/bin/sleep 240`, a slow build, a docker pull) emits nothing for its
+//	  whole duration, and no heartbeat interval can cover that;
+//	this window is what bridges that one call.
+//
+// 15 minutes is chosen against the longest plausible single tool call rather
+// than the longest gap between calls. Latching too long is cheap: FOUR
+// positive signals already clear the stamp before it can decay — a real wait
+// (state.go), a Done turn-end from the Stop hook, a death, and an explicit
+// ack. Decay only matters for an agent that hard-crashed without firing
+// SessionEnd, which death detection reclaims anyway. The failure this
+// constant was tuned to avoid does not happen; the one it caused did.
+const hookWorkFreshSec = 900
 
 // applyDwell is the minimum-dwell debounce layered on top of DeriveAttention.
 // It decides the DISPLAYED attention from the raw derived value, suppressing

@@ -15,6 +15,7 @@
 #   Notification  permission_prompt   → zdev-notify claude needs-permission
 #   Notification  (catch-all)         → zdev-notify claude waiting
 #   UserPromptSubmit                  → zdev-notify claude working
+#   PreToolUse                        → zdev-notify claude working  (heartbeat)
 #   SessionEnd                        → zdev-notify claude session-end
 #   SessionStart                      → zdev-notify claude alive
 #
@@ -141,6 +142,14 @@ install_claude() {
         changed=1
     fi
     ensure_entry "UserPromptSubmit" ""                  "working"          "json"
+    # PreToolUse is the working HEARTBEAT, and until 2026-08-24 it was never
+    # installed — while six places in the daemon documented it as the thing
+    # that keeps AttWorking fresh ("once wired", they all said). Without it
+    # "working" was stamped once per turn and decayed after hookWorkFreshSec,
+    # so any turn longer than the window silently read as idle. zdev-notify
+    # rate-limits the heartbeat itself (ZDEV_HEARTBEAT_MIN_SEC, default 60s)
+    # so firing per tool call does not wake the daemon per tool call.
+    ensure_entry "PreToolUse"       ""                  "working"          "json"
 
     # Death detection (NOW#3): SessionEnd reports WHY the session ended;
     # zdev-notify maps clean reasons to "done" and everything else to the
