@@ -239,7 +239,31 @@ case "$STATE" in
         # summary slot, unused for working; see tmuxctl.NotifSeen.Src.
         TITLE="$TOOL"
         if [ -n "$SESSION" ]; then
-            printf '%s\nworking\n\n%s\n' "$(date +%s)" "$SRC" > "$TS_FILE" 2>/dev/null || true
+            # Heartbeat rate limit. PreToolUse fires before EVERY tool call, and
+            # each write wakes the daemon's fsnotify watcher into a full
+            # recompute-and-publish — the expensive part is not the fork, it is
+            # the fleet-wide wake-up. A stamp only has to stay fresher than
+            # hookWorkFreshSec, so re-stamping more than once a minute buys
+            # nothing. A "prompt" source is never rate-limited: a real turn
+            # start must land immediately.
+            SKIP_HEARTBEAT=""
+            if [ "$SRC" = "heartbeat" ] && [ -f "$TS_FILE" ]; then
+                # Builtin read, no fork: line 1 is the unix ts, line 2 the kind.
+                HB_TS=""; HB_KIND=""
+                { read -r HB_TS; read -r HB_KIND; } < "$TS_FILE" 2>/dev/null || true
+                case "$HB_TS" in
+                    ''|*[!0-9]*) ;;   # unparseable — fall through and write
+                    *)
+                        if [ "$HB_KIND" = "working" ] && \
+                           [ "$(( $(date +%s) - HB_TS ))" -lt "${ZDEV_HEARTBEAT_MIN_SEC:-60}" ]; then
+                            SKIP_HEARTBEAT=1
+                        fi
+                        ;;
+                esac
+            fi
+            if [ -z "$SKIP_HEARTBEAT" ]; then
+                printf '%s\nworking\n\n%s\n' "$(date +%s)" "$SRC" > "$TS_FILE" 2>/dev/null || true
+            fi
         fi
         ;;
     clear)
@@ -364,7 +388,16 @@ esac
 # on their next hook event.
 [ ! -f "$TS_FILE" ] || chmod 600 "$TS_FILE" 2>/dev/null || true
 
-tmux select-pane -t "$TMUX_PANE" -T "$TITLE" 2>/dev/null || true
+# A rate-limited heartbeat has, by definition, changed nothing — so it must
+# not touch the pane title either. Retitling makes tmux repaint the pane
+# BORDERS across the whole window (pane-border-status top), and with the
+# PreToolUse heartbeat firing per tool call that read as the entire layout
+# briefly dimming every time an agent printed anything. Reported 2026-08-24.
+# The guard belongs here rather than in the working branch because this line
+# runs for every state, unconditionally.
+if [ -z "${SKIP_HEARTBEAT:-}" ]; then
+    tmux select-pane -t "$TMUX_PANE" -T "$TITLE" 2>/dev/null || true
+fi
 
 # Append to a global state timeline so the timeline popup can show
 # what happened across every session over the recent past.
