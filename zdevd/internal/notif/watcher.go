@@ -22,6 +22,7 @@ package notif
 import (
 	"context"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -101,8 +102,48 @@ func (w *Watcher) Run(ctx context.Context) error {
 		Root:    w.dir,
 		Ensure:  fswatch.EnsureMkdir,
 		Ops:     fsnotify.Create | fsnotify.Write | fsnotify.Chmod,
+		OnStart: func(h *fswatch.Handle) { w.sweep() },
 		OnEvent: func(h *fswatch.Handle, ev fsnotify.Event) { w.handle(ev.Name) },
 	})
+}
+
+// sweep replays every notif token already on disk, once, at startup.
+//
+// Without it the daemon is blind to everything that happened before it
+// started: the watcher is purely fsnotify-reactive, and HookWorkTS is not
+// persisted, so a restart blanked the working state of the entire fleet until
+// each session happened to fire another hook. For a session mid-turn that
+// could be never — a long turn fires nothing between its prompt and its Stop.
+// Reported 2026-08-24 as "I've restarted, and everything's gone".
+//
+// Replay is safe because the tokens ARE the durable source of truth and every
+// value crossing this boundary is already bounded: readNotifFile caps the read
+// size, and the hub clamps a timestamp outside
+// [now-notifMaxPastSec, now+notifFutureSkewSec] rather than trusting it. A
+// stale `working` token simply fails the freshness test downstream and derives
+// nothing, exactly as it would have while the daemon was up.
+func (w *Watcher) sweep() {
+	entries, err := os.ReadDir(w.dir)
+	if err != nil {
+		// A missing directory is the normal cold-start case; the watcher's
+		// EnsureMkdir has already handled creation, so anything else here is
+		// worth a line but never fatal.
+		if !os.IsNotExist(err) {
+			slog.Warn("notif: startup sweep failed", "dir", w.dir, "err", err)
+		}
+		return
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		w.handle(filepath.Join(w.dir, e.Name()))
+		n++
+	}
+	if n > 0 {
+		slog.Info("notif: replayed tokens at startup", "count", n)
+	}
 }
 
 // handle reads one notif file and emits a NotifSeen, applying the empty-read

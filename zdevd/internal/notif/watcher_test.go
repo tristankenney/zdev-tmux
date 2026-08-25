@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -351,4 +352,51 @@ func TestNotifWatcher_CtxCancel(t *testing.T) {
 	case <-time.After(fswatchtest.DefaultDeadline):
 		t.Error("Run did not return after cancel")
 	}
+}
+
+// A daemon restart used to blank the fleet's working state: the watcher is
+// fsnotify-reactive and HookWorkTS is not persisted, so anything that happened
+// before startup was invisible until the session fired another hook — which for
+// a session mid-turn can be never. Reported 2026-08-24 as "I've restarted, and
+// everything's gone".
+func TestSweepReplaysExistingTokensAtStartup(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().Unix()
+
+	write := func(session, body string) {
+		t.Helper()
+		p := filepath.Join(dir, notifPrefix+session+notifSuffix)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("alpha", fmt.Sprintf("%d\nworking\n\nheartbeat\n", now-30))
+	write("beta", fmt.Sprintf("%d\npermission\nApprove?\n", now-5))
+	// Neither of these is a token and neither may produce an event.
+	write("gamma", "not-a-timestamp\nworking\n")
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var seen []string
+	w := NewWatcher(dir, func(ev tmuxctl.Event) {
+		if n, ok := ev.(tmuxctl.NotifSeen); ok {
+			seen = append(seen, n.Session+":"+n.Kind)
+		}
+	})
+	w.sweep()
+
+	sort.Strings(seen)
+	want := []string{"alpha:working", "beta:permission"}
+	if strings.Join(seen, ",") != strings.Join(want, ",") {
+		t.Errorf("sweep emitted %v, want %v", seen, want)
+	}
+}
+
+func TestSweepMissingDirIsBenign(t *testing.T) {
+	w := NewWatcher(filepath.Join(t.TempDir(), "nope"), func(tmuxctl.Event) {})
+	w.sweep() // must not panic or block
 }
