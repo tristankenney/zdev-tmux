@@ -8,7 +8,7 @@
 #   notify = ["/path/to/zdev-codex-notify"]
 #
 # Event → state mapping (EventMsg.type):
-#   task_started                 → clear   (agent is now working)
+#   task_started                 → working (agent is now working)
 #   task_complete                → done    (turn finished — ◆)
 #   exec_approval_request        → waiting (shell exec approval needed — ●)
 #   apply_patch_approval_request → waiting (patch approval needed — ●)
@@ -28,5 +28,10 @@ case "$TYPE" in
   exec_approval_request|apply_patch_approval_request)
     "$NOTIFY" codex waiting 2>/dev/null || true ;;
   task_started)
-    "$NOTIFY" codex clear 2>/dev/null || true ;;
+    # `working`, not `clear`. clear only DELETES the marker, which left codex
+    # with no working stamp at all — so a codex turn showed idle from its first
+    # second, where Claude Code at least showed working for the first 3 minutes.
+    # Codex emits no per-tool event, so this stamp is the only hook-sourced
+    # working signal it has; the activity heartbeat carries it from there.
+    "$NOTIFY" codex working 2>/dev/null || true ;;
 esac
