@@ -274,7 +274,8 @@ func TestWorkingSurvivesALongSingleToolCall(t *testing.T) {
 	now := int64(1_700_000_000)
 
 	// A four-minute tool call with the title parked at a bare "claude" — the
-	// exact shape of the screenshot that reported this.
+	// exact shape of the screenshot that reported this, and the worst case the
+	// window is sized against.
 	longCall := AttentionInputs{
 		Titles:     []string{"claude", "shell"},
 		HookWorkTS: now - 240,
@@ -294,10 +295,16 @@ func TestWorkingSurvivesALongSingleToolCall(t *testing.T) {
 		t.Errorf("a rate-limited heartbeat must read as working, got %q", got.Attention)
 	}
 
-	// The window must comfortably exceed the longest plausible single call.
-	// If someone lowers it back under a few minutes, this fails loudly.
+	// The window is bounded on BOTH sides. Too short and a long tool call reads
+	// as idle; too long and an agent that stopped without firing Stop shows
+	// working for as long as the window lasts (observed at 445s on the live
+	// fleet with a 900s window — the "everything is staying as active" report).
 	if hookWorkFreshSec < 300 {
 		t.Errorf("hookWorkFreshSec = %d: too short to bridge one long tool call",
+			hookWorkFreshSec)
+	}
+	if hookWorkFreshSec > 600 {
+		t.Errorf("hookWorkFreshSec = %d: long enough that a stopped agent lingers as working",
 			hookWorkFreshSec)
 	}
 

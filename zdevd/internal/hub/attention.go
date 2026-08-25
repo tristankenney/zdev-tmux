@@ -172,14 +172,24 @@ const hookWaitFreshSec = 30
 //	  whole duration, and no heartbeat interval can cover that;
 //	this window is what bridges that one call.
 //
-// 15 minutes is chosen against the longest plausible single tool call rather
-// than the longest gap between calls. Latching too long is cheap: FOUR
-// positive signals already clear the stamp before it can decay — a real wait
-// (state.go), a Done turn-end from the Stop hook, a death, and an explicit
-// ack. Decay only matters for an agent that hard-crashed without firing
-// SessionEnd, which death detection reclaims anyway. The failure this
-// constant was tuned to avoid does not happen; the one it caused did.
-const hookWorkFreshSec = 900
+// The value is DERIVED, not picked: it must exceed the heartbeat interval
+// (ZDEV_HEARTBEAT_MIN_SEC, 60s) plus the longest single tool call worth
+// bridging (the observed worst case was a `/bin/sleep 240`). 60 + 240 = 300.
+//
+// A first cut used 900s and was wrong in the other direction. Latching is NOT
+// free: an agent that stops without firing Stop looks identical to one inside
+// a long tool call, so every second of window is a second of false "working".
+// Measured on the live fleet 2026-08-24 — genuinely-working sessions sat at
+// 0-7s (the heartbeat re-stamps continuously), while a session whose agent had
+// exited sat at 445s and showed working the whole time. Fifteen minutes of
+// that across a fleet is worse than a few minutes of false idle inside one
+// long call: false idle is a glance-level annoyance, false working pollutes
+// every row and is what "everything is staying as active" meant.
+//
+// Four positive signals still clear the stamp early — a real wait, a Done
+// turn-end from the Stop hook, a death, and an ack — so this window only ever
+// governs the case where Stop was missed.
+const hookWorkFreshSec = 300
 
 // applyDwell is the minimum-dwell debounce layered on top of DeriveAttention.
 // It decides the DISPLAYED attention from the raw derived value, suppressing
