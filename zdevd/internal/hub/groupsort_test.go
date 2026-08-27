@@ -70,8 +70,9 @@ func TestCollapsedNames(t *testing.T) {
 	s.projectData["epsilon-repo-w"] = projectData{Attention: proto.AttWorking}
 
 	hidden := collapsedNames(s, names)
-	// Stream members fold with their initiative — a stream is inside the
-	// group, never a group of its own.
+	// Stream members fold in their OWN unit (<init>/<stream>), not their
+	// initiative's — see collapseUnitKey. Here nothing in alpha is attended
+	// or active, so its floor and its stream fold alike.
 	want := map[string]bool{
 		"alpha/repo-a":          true,
 		"alpha/repo-b":          true,
@@ -174,4 +175,90 @@ func TestCollapseParity(t *testing.T) {
 			t.Errorf("wire-visible %q missing from cursor rows", n)
 		}
 	}
+}
+
+// A stream is its own collapse unit: entering an initiative expands the FLOOR
+// but must not expand its streams. Operator request 2026-08-26 — attendance
+// holds a whole unit open, so one key for the entire initiative meant merely
+// entering it expanded every stream at once.
+func TestStreamsDoNotExpandWithTheirInitiative(t *testing.T) {
+	names := []string{
+		"alpha", "alpha/repo-a", "alpha/repo-b",
+		"alpha/s1", "alpha/s1/repo-x", "alpha/s1/repo-y",
+		"alpha/s2", "alpha/s2/repo-z",
+	}
+	newS := func() *state {
+		s := newState()
+		s.collapseGroups = true
+		return s
+	}
+
+	t.Run("attending a floor member expands the floor, not the streams", func(t *testing.T) {
+		s := newS()
+		s.clientSessions = map[string]string{"c1": proto.SessionKey("alpha/repo-a")}
+		h := collapsedNames(s, names)
+		for _, n := range []string{"alpha/s1/repo-x", "alpha/s1/repo-y", "alpha/s2/repo-z"} {
+			if _, hidden := h[n]; !hidden {
+				t.Errorf("%s should stay folded — its stream is not active", n)
+			}
+		}
+		for _, n := range []string{"alpha/repo-a", "alpha/repo-b"} {
+			if _, hidden := h[n]; hidden {
+				t.Errorf("%s is floor and the initiative is attended — must stay visible", n)
+			}
+		}
+		// Stream homes are headers, so the stream is never invisible.
+		for _, n := range []string{"alpha/s1", "alpha/s2"} {
+			if _, hidden := h[n]; hidden {
+				t.Errorf("%s is a stream header and must never fold", n)
+			}
+		}
+	})
+
+	t.Run("attending a stream expands only that stream", func(t *testing.T) {
+		s := newS()
+		s.clientSessions = map[string]string{"c1": proto.SessionKey("alpha/s1/repo-x")}
+		h := collapsedNames(s, names)
+		for _, n := range []string{"alpha/s1/repo-x", "alpha/s1/repo-y"} {
+			if _, hidden := h[n]; hidden {
+				t.Errorf("%s is in the attended stream — must be visible", n)
+			}
+		}
+		if _, hidden := h["alpha/s2/repo-z"]; !hidden {
+			t.Error("alpha/s2/repo-z is a different stream and must stay folded")
+		}
+	})
+
+	t.Run("an active member pierces its stream without attendance", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			pd   projectData
+		}{
+			{"working", projectData{Attention: proto.AttWorking}},
+			{"waiting", projectData{Attention: proto.AttWaiting}},
+			{"finished", projectData{Attention: proto.AttFinished}},
+			{"dead", projectData{DeadSinceTS: 12345}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				s := newS()
+				s.projectData[proto.SessionKey("alpha/s1/repo-x")] = tc.pd
+				h := collapsedNames(s, names)
+				if _, hidden := h["alpha/s1/repo-x"]; hidden {
+					t.Errorf("a %s stream member must pierce the fold", tc.name)
+				}
+				if _, hidden := h["alpha/s1/repo-y"]; !hidden {
+					t.Error("its quiet sibling must still fold")
+				}
+			})
+		}
+	})
+
+	t.Run("nothing active anywhere: streams and floor both fold", func(t *testing.T) {
+		h := collapsedNames(newS(), names)
+		for _, n := range []string{"alpha/repo-a", "alpha/s1/repo-x", "alpha/s2/repo-z"} {
+			if _, hidden := h[n]; !hidden {
+				t.Errorf("%s should fold when nothing is attended or active", n)
+			}
+		}
+	})
 }

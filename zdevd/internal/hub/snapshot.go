@@ -852,6 +852,34 @@ func orderedRowNames(st *state) []string {
 // call it and MUST both call it: it participates in navigation row order,
 // the single-authority contract proto.RowSort also lives under. Hub
 // goroutine only.
+// collapseUnitKey returns the collapse unit a row belongs to.
+//
+// A stream is its OWN unit (<initiative>/<stream>), not part of its
+// initiative. This reverses the original rule ("a stream is inside the group,
+// never a group of its own") on operator request, 2026-08-26: because
+// attendance holds a whole unit open, one key for the entire initiative meant
+// that merely entering it — or any floor member — expanded every stream at
+// once, which is most of the sidebar on an initiative carrying several. A
+// stream now expands when it is ACTIVE: attended, or per-row when one of its
+// members is working/waiting/finished/dead (that pierce is unchanged and is
+// not configurable).
+//
+// Entering the initiative therefore still expands the FLOOR, and each stream
+// stays folded behind its own stream-home header until something happens in
+// it. A stream whose home directory is not itself rowed has no header and
+// folds like a drawer, behind the renderer's synthetic one. Pure.
+func collapseUnitKey(name string, homes, streamHomes map[string]bool) string {
+	if streamHomes[name] {
+		return name // the stream's own header row
+	}
+	if sk := proto.StreamKey(name); sk != "" {
+		// <init>/<stream>/<repo> → <init>/<stream>, the same key its home
+		// row takes above.
+		return proto.GroupKey(name) + "/" + sk
+	}
+	return proto.EffectiveGroupKey(name, homes)
+}
+
 func collapsedNames(st *state, names []string) map[string]struct{} {
 	if !st.collapseGroups {
 		return nil
@@ -862,9 +890,10 @@ func collapsedNames(st *state, names []string) map[string]struct{} {
 		members []string
 	}
 	homes := proto.HomeSet(names)
+	streamHomes := proto.StreamHomeSet(names)
 	groups := make(map[string]*groupInfo)
 	for _, n := range names {
-		key := proto.EffectiveGroupKey(n, homes)
+		key := collapseUnitKey(n, homes, streamHomes)
 		if key == "" {
 			continue
 		}
@@ -873,7 +902,9 @@ func collapsedNames(st *state, names []string) map[string]struct{} {
 			g = &groupInfo{}
 			groups[key] = g
 		}
-		if homes[n] {
+		// A stream home is the header of its OWN unit, exactly as an
+		// initiative home is of the initiative's: headers never fold.
+		if homes[n] || streamHomes[n] {
 			g.hasHome = true
 		} else {
 			g.members = append(g.members, n)
