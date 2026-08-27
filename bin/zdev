@@ -237,7 +237,20 @@ build_layout() {
     # if the project is later dropped from the registry (the session tag
     # outlives the projects-file entry). Reaping requires this OR a known
     # project mapping; a session zdev never created carries neither.
-    tmux set-option -t "=$session" @zdev-owned 1 2>/dev/null || true
+    #
+    # NO "=" PREFIX. set-option's -t does not accept the exact-match prefix
+    # that has-session/switch-client do: `set-option -t "=name"` fails with
+    # "no such session: =name". Combined with the 2>/dev/null || true below
+    # that made this silently no-op for its entire life — verified 2026-08-27,
+    # NOT ONE live session carried the tag, including ones created that
+    # morning. The reaper had therefore been running on the known-project
+    # fallback alone, which is exactly the check that fails for an orphan
+    # whose directory (and registry entry) is gone. Exact names win over
+    # tmux's prefix matching, and the session was just created here, so the
+    # bare name is unambiguous.
+    if ! tmux set-option -t "$session" @zdev-owned 1 2>/dev/null; then
+        echo "zdev: warning — could not stamp @zdev-owned on $session (reaping will fall back to registry lookup)" >&2
+    fi
 
     local shell_pane
     shell_pane=$(tmux display-message -p -t "$session:dev" '#{pane_id}')
@@ -360,6 +373,11 @@ Usage:
   zdev kill --idle [hours] [--dry-run]
                                  Kill zdev-owned sessions idle >N hours
                                  (default: ${REAP_AFTER_HOURS}); --dry-run lists, kills nothing
+  zdev reap --orphans [--dry-run]
+                                 Kill sessions whose directory is gone (a
+                                 stream/project removed with rm -rf). No opt-in
+                                 and no idle threshold: the work was deleted.
+                                 Runs automatically on 'zdev restart'.
   zdev reap [--dry-run]          Reap idle zdev-owned sessions; skips
                                  favorites (launchd entry point). OFF unless
                                  ZDEV_REAP_ENABLED=1; --dry-run always previews
@@ -542,6 +560,60 @@ do_reap() {
     done < <(tmux list-sessions -F "#{session_name} #{session_attached} #{session_last_attached} #{session_created} #{session_activity} #{@zdev-owned}")
 }
 
+# do_reap_orphans kills sessions whose backing DIRECTORY is gone.
+#
+# Orphans arise from the documented teardown: a stream or project is removed
+# with `rm -rf`, the sidebar row disappears with the directory, and the tmux
+# session it left behind lingers forever — unreapable by do_reap, because the
+# registry lookup that proves ownership needs the entry the deletion removed.
+#
+# A missing directory is a STRONGER signal than do_reap's idleness heuristic,
+# not a weaker one: the operator deleted the work themselves, so nothing in
+# that session can still be doing anything useful in it. That is why this does
+# not wait for an idle threshold and does not require the @zdev-owned tag.
+#
+# It is still bounded hard:
+#   - session_path must be non-empty AND missing;
+#   - it must live under $WORKSPACE — a session rooted anywhere else is not
+#     zdev's business, whatever happened to its directory;
+#   - attached sessions are never touched (somebody is looking at it);
+#   - favorites are never touched.
+#
+# An orphan can still hold a LIVE agent whose cwd was deleted under it, so the
+# report says so per session rather than killing quietly. $1 = dry-run.
+do_reap_orphans() {
+    local dry="${1:-0}" current killed=0
+    current=$(current_session_name)
+    tmux list-sessions >/dev/null 2>&1 || return 0
+
+    while IFS='|' read -r sn attached spath; do
+        [[ -z "$sn" ]] && continue
+        (( attached > 0 )) && continue
+        [[ "$sn" == "$current" ]] && continue
+        is_favorite_session "$sn" && continue
+        # A live directory is not an orphan; an unknown one is not ours.
+        [[ -n "$spath" && ! -d "$spath" ]] || continue
+        [[ "$spath" == "$WORKSPACE"/* ]] || continue
+
+        # Name any live agent so a kill is never a silent surprise.
+        local agents note=""
+        agents=$(tmux list-panes -s -t "=$sn" -F '#{pane_current_command}' 2>/dev/null \
+            | grep -cvE '^(zsh|bash|sh|fish|zdev-sidebar|tail)$' || true)
+        (( agents > 0 )) && note=" — ${agents} live process(es)"
+
+        if (( dry )); then
+            echo "would reap orphan $sn (dir gone: $spath)${note}"
+            continue
+        fi
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] reap: killing orphan $sn (dir gone: $spath)${note}" \
+            | tee -a "$REAP_LOG" >&2
+        tmux kill-session -t "=$sn" 2>/dev/null || true
+        killed=$(( killed + 1 ))
+    done < <(tmux list-sessions -F "#{session_name}|#{session_attached}|#{session_path}")
+
+    (( dry )) || (( killed == 0 )) || echo "zdev: reaped $killed orphan session(s)"
+}
+
 cmd_kill() {
     if [[ $# -eq 0 ]]; then
         echo "Usage: zdev kill <project>... | all | --idle [hours]" >&2
@@ -601,13 +673,27 @@ cmd_reap() {
     # keeps a fresh install from silently killing sessions. --dry-run
     # always works (it kills nothing) so the timer and knob can be verified
     # safely, and it reports each candidate's idle age and ownership.
-    local dry=0
-    case "${1:-}" in --dry-run) dry=1 ;; esac
+    local dry=0 orphans=0 a
+    for a in ${@+"$@"}; do
+        case "$a" in
+            --dry-run) dry=1 ;;
+            --orphans) orphans=1 ;;
+            *) echo "usage: zdev reap [--orphans] [--dry-run]" >&2; return 2 ;;
+        esac
+    done
+    mkdir -p "$(dirname "$REAP_LOG")"
+    # --orphans is NOT gated on ZDEV_REAP_ENABLED. That knob exists so a
+    # fresh install never inherits an automatic killer that acts on an
+    # IDLENESS GUESS. An orphan is not a guess: its directory was deleted by
+    # the operator, so there is no judgement call to opt into.
+    if (( orphans )); then
+        do_reap_orphans "$dry"
+        return 0
+    fi
     if (( dry == 0 )) && [[ "$REAP_ENABLED" != "1" ]]; then
         echo "zdev reap: disabled — set ZDEV_REAP_ENABLED=1 to enable automatic reaping (try 'zdev reap --dry-run' to preview)" >&2
         return 0
     fi
-    mkdir -p "$(dirname "$REAP_LOG")"
     do_reap "$REAP_AFTER_HOURS" "$dry"
 }
 
@@ -1773,10 +1859,12 @@ CLAUDEEOF
         # connector just dials the fresh daemon on next use.
         shift
         do_build=0
+        keep_orphans=0
         for a in ${@+"$@"}; do
             case "$a" in
                 --build) do_build=1 ;;
-                *) echo "usage: zdev restart [--build]" >&2; exit 2 ;;
+                --keep-orphans) keep_orphans=1 ;;
+                *) echo "usage: zdev restart [--build] [--keep-orphans]" >&2; exit 2 ;;
             esac
         done
         if (( do_build )); then
@@ -1789,6 +1877,13 @@ CLAUDEEOF
                 echo "zdev restart: --build: source repo not found from $self" >&2
                 exit 1
             fi
+        fi
+        # Orphan sweep BEFORE the daemon restart, so the fresh daemon never
+        # enumerates sessions that are about to disappear. Unlike `zdev reap`
+        # this needs no opt-in: it only kills sessions whose directory the
+        # operator already deleted, never on an idleness guess.
+        if (( ! keep_orphans )); then
+            do_reap_orphans 0
         fi
         echo "zdev restart: restarting daemon..."
         case "$(uname -s)" in
