@@ -570,3 +570,49 @@ func TestProjectEqualsIntentAndBdReady(t *testing.T) {
 		t.Error("projects differing in BdReady should be unequal")
 	}
 }
+
+// A nil regDone must not panic. Three close sites take it — the two shutdown
+// paths in Register and the hub loop's own close(req.done) — and because that
+// last one runs on the single-writer goroutine, an unrecovered panic there
+// aborts the process rather than failing one caller. Verified to reproduce
+// `panic: close of nil channel` with the guard removed.
+func TestRegisterToleratesNilRegDone(t *testing.T) {
+	t.Run("live hub: the subscriber is really registered", func(t *testing.T) {
+		h := NewHub(Config{Debounce: testDebounce})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go h.Run(ctx)
+
+		sub := NewSubscriber("", "")
+		if err := h.Register(sub, nil); err != nil {
+			t.Fatalf("Register with nil regDone: %v", err)
+		}
+		// A caller with no regDone has no completion signal, so the only
+		// honest proof of commitment is a snapshot actually arriving.
+		if err := h.Submit(tmuxctl.SessionsChanged{}); err != nil {
+			t.Fatalf("Submit: %v", err)
+		}
+		select {
+		case snap := <-sub.Snaps():
+			if snap == nil {
+				t.Fatal("registered subscriber received a nil snapshot")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("no snapshot reached a subscriber registered with a nil regDone")
+		}
+		h.Unregister(sub)
+	})
+
+	t.Run("stopped hub: nil takes the shutdown path", func(t *testing.T) {
+		h := NewHub(Config{Debounce: testDebounce})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- h.Run(ctx) }()
+		cancel()
+		<-done
+
+		if err := h.Register(NewSubscriber("", ""), nil); err != ErrHubStopped {
+			t.Errorf("want ErrHubStopped, got %v", err)
+		}
+	})
+}

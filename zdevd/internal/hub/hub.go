@@ -403,13 +403,23 @@ func (h *Hub) Submit(ev tmuxctl.Event) error {
 }
 
 // Register adds a subscriber. The hub closes regDone after the registration
-// is committed AND the first snapshot (if any) is in sub.snaps.
+// is committed AND the first snapshot (if any) is in sub.snaps. A nil regDone
+// is tolerated but leaves the caller no completion signal; on the shutdown
+// paths regDone closes with the registration NOT committed, so check the
+// error rather than treating a closed channel as proof of registration.
 //
 // The send into h.register is guarded by a second select against h.stopped so
 // a hub shutdown that races between the initial check and the send cannot
 // leave the caller blocked forever. Same shutdown-safe pattern as Unregister
 // and DiagSnapshot.
 func (h *Hub) Register(sub *Subscriber, regDone chan<- struct{}) error {
+	// Self-defense, not a supported mode: a nil regDone is a caller defect,
+	// and normalizing it here is what keeps that defect off the hub
+	// goroutine. registerReq is unexported and built only below, so the
+	// loop's close(req.done) can rely on done never being nil.
+	if regDone == nil {
+		regDone = make(chan struct{})
+	}
 	select {
 	case <-h.stopped:
 		close(regDone)

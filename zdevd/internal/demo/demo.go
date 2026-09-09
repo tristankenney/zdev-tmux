@@ -109,6 +109,11 @@ func New() (*DemoSource, error) {
 // Register adds sub to the subscriber set and immediately pushes the current
 // snapshot. Implements socket.SnapshotSource.
 func (d *DemoSource) Register(sub *hub.Subscriber, regDone chan<- struct{}) error {
+	// Same self-defense as hub.Register: two implementations of
+	// socket.SnapshotSource must not disagree about a nil regDone.
+	if regDone == nil {
+		regDone = make(chan struct{})
+	}
 	d.mu.Lock()
 	d.subs[sub] = struct{}{}
 	snap := d.lastSnap
