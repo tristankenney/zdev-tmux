@@ -885,8 +885,9 @@ func collapsedNames(st *state, names []string) map[string]struct{} {
 		return nil
 	}
 	type groupInfo struct {
-		hold    bool // attended — the whole group stays expanded
-		hasHome bool // initiative (home row) vs homeless container
+		hold    bool   // attended — the whole group stays expanded
+		hasHome bool   // initiative (home row) vs homeless container
+		stream  string // stream unit's home row; "" for initiatives/containers
 		members []string
 	}
 	homes := proto.HomeSet(names)
@@ -902,11 +903,24 @@ func collapsedNames(st *state, names []string) map[string]struct{} {
 			g = &groupInfo{}
 			groups[key] = g
 		}
-		// A stream home is the header of its OWN unit, exactly as an
-		// initiative home is of the initiative's: headers never fold.
-		if homes[n] || streamHomes[n] {
+		switch {
+		case homes[n]:
+			// An initiative/group home is the header its rollup hangs on and
+			// never folds.
 			g.hasHome = true
-		} else {
+		case streamHomes[n]:
+			// A stream home marks the unit as home-bearing (so it gates on
+			// collapseInitiatives, not collapseContainers) but is ITSELF a
+			// fold candidate. Pinning it open made every quiet stream leave a
+			// permanent header behind — nine of them on one initiative, which
+			// read as MORE expanded than before the streams were split out
+			// (reported 2026-08-27). A quiet stream must disappear into its
+			// initiative's rollup entirely; the post-pass below brings the
+			// header back the moment anything inside it survives.
+			g.hasHome = true
+			g.stream = n
+			g.members = append(g.members, n)
+		default:
 			g.members = append(g.members, n)
 		}
 		if isClientAttended(st, proto.SessionKey(n)) {
@@ -958,6 +972,37 @@ func collapsedNames(st *state, names []string) map[string]struct{} {
 				hidden = make(map[string]struct{})
 			}
 			hidden[m] = struct{}{}
+		}
+	}
+	// Two reasons a folded stream header comes back. Both restore the HEADER
+	// only — the stream's members stay folded, which is the whole point of
+	// splitting streams into their own units.
+	//
+	//  1. the initiative is ATTENDED: from inside it you must be able to see
+	//     which streams it has. Folding a quiet stream away completely made
+	//     `observability` vanish from an initiative the operator was working
+	//     in (reported 2026-08-27) — "don't expand" was never "don't exist".
+	//  2. a member survived: otherwise it renders as an orphaned indented row
+	//     with nothing naming the stream it belongs to.
+	for _, g := range groups {
+		if g.stream == "" {
+			continue
+		}
+		if parent := groups[proto.GroupKey(g.stream)]; parent != nil && parent.hold {
+			delete(hidden, g.stream)
+			continue
+		}
+		if _, homeHidden := hidden[g.stream]; !homeHidden {
+			continue
+		}
+		for _, m := range g.members {
+			if m == g.stream {
+				continue
+			}
+			if _, memberHidden := hidden[m]; !memberHidden {
+				delete(hidden, g.stream)
+				break
+			}
 		}
 	}
 	return hidden

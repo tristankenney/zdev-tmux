@@ -207,10 +207,13 @@ func TestStreamsDoNotExpandWithTheirInitiative(t *testing.T) {
 				t.Errorf("%s is floor and the initiative is attended — must stay visible", n)
 			}
 		}
-		// Stream homes are headers, so the stream is never invisible.
+		// Attending the initiative reveals which streams it HAS — headers
+		// only, members still folded. "Don't expand" was never "don't exist":
+		// folding a quiet stream away completely made one vanish from an
+		// initiative the operator was working in (reported 2026-08-27).
 		for _, n := range []string{"alpha/s1", "alpha/s2"} {
 			if _, hidden := h[n]; hidden {
-				t.Errorf("%s is a stream header and must never fold", n)
+				t.Errorf("%s must be visible from inside the attended initiative", n)
 			}
 		}
 	})
@@ -226,6 +229,11 @@ func TestStreamsDoNotExpandWithTheirInitiative(t *testing.T) {
 		}
 		if _, hidden := h["alpha/s2/repo-z"]; !hidden {
 			t.Error("alpha/s2/repo-z is a different stream and must stay folded")
+		}
+		// Attending a STREAM is not attending the initiative, so the sibling
+		// stream's header does not come back.
+		if _, hidden := h["alpha/s2"]; !hidden {
+			t.Error("alpha/s2 heads an untouched stream and must stay folded")
 		}
 	})
 
@@ -253,9 +261,27 @@ func TestStreamsDoNotExpandWithTheirInitiative(t *testing.T) {
 		}
 	})
 
+	t.Run("a surviving member brings its stream header back", func(t *testing.T) {
+		s := newS()
+		s.projectData[proto.SessionKey("alpha/s1/repo-x")] = projectData{Attention: proto.AttWaiting}
+		h := collapsedNames(s, names)
+		if _, hidden := h["alpha/s1"]; hidden {
+			t.Error("alpha/s1 has a visible member — its header must return, " +
+				"or the member renders orphaned with nothing naming its stream")
+		}
+		if _, hidden := h["alpha/s2"]; !hidden {
+			t.Error("alpha/s2 is still wholly quiet and must stay folded")
+		}
+		if _, hidden := h["alpha/s1/repo-y"]; !hidden {
+			t.Error("the quiet sibling inside the revived stream still folds")
+		}
+	})
+
 	t.Run("nothing active anywhere: streams and floor both fold", func(t *testing.T) {
 		h := collapsedNames(newS(), names)
-		for _, n := range []string{"alpha/repo-a", "alpha/s1/repo-x", "alpha/s2/repo-z"} {
+		// Nothing attended anywhere, so headers fold away too — a quiet
+		// stream in an initiative you are NOT in costs no rows at all.
+		for _, n := range []string{"alpha/repo-a", "alpha/s1", "alpha/s1/repo-x", "alpha/s2", "alpha/s2/repo-z"} {
 			if _, hidden := h[n]; !hidden {
 				t.Errorf("%s should fold when nothing is attended or active", n)
 			}
