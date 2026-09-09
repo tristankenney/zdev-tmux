@@ -1,8 +1,16 @@
 {
   "name": "zdev",
   "description": "Drive a zdev-supervised agent fleet: initiatives, triage, review, fleet status",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "tristankenney"
+  },
+  "mcpServers": {
+    "zdev": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/start.sh",
+      "args": [],
+      "env": {}
+    }
   }
 }

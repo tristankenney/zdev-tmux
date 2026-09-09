@@ -8,6 +8,9 @@
 # Usage:
 #   zdev-install-hooks            # install / upgrade
 #   zdev-install-hooks --dry-run  # show what would change, write nothing
+#   zdev-install-hooks --prune-settings
+#                                 # remove zdev's own hook entries from
+#                                 # settings.json once the PLUGIN supplies them
 #
 # Claude Code (automated): merges entries into ~/.claude/settings.json:
 #
@@ -39,7 +42,13 @@
 set -euo pipefail
 
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+PRUNE=0
+case "${1:-}" in
+    --dry-run)        DRY_RUN=1 ;;
+    --prune-settings) PRUNE=1 ;;
+    "")               ;;
+    *) echo "usage: zdev-install-hooks [--dry-run | --prune-settings]" >&2; exit 2 ;;
+esac
 
 NOTIFY="$HOME/.local/bin/zdev-notify"
 SETTINGS="${ZDEV_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
@@ -51,7 +60,78 @@ fi
 
 # ---------- Claude Code ----------
 
+# plugin_supplies_hooks — true when an INSTALLED zdev plugin already declares
+# the notify hooks in its own hooks/hooks.json.
+#
+# Both wirings firing is not a cosmetic duplicate: every event would run
+# zdev-notify twice, doubling the fsnotify wake-ups the daemon does a full
+# recompute-and-publish on. So the plugin wins and this installer stands down
+# — declarative hooks arrive with the plugin, are reviewable in a diff, and
+# cannot silently omit an event the way this script omitted PreToolUse for its
+# entire life (fixed 2026-09-09, after six places in the daemon had documented
+# it as "once wired").
+#
+# Detection is deliberately by CONTENT, not by a version or a marker file: any
+# plugin dir carrying a hooks.json that invokes zdev-notify is the real thing,
+# however it got there.
+plugin_supplies_hooks() {
+    local root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache"
+    [[ -d "$root" ]] || return 1
+    grep -rlq --include=hooks.json 'zdev-notify' "$root" 2>/dev/null
+}
+
+# prune_claude_settings removes zdev's OWN hook entries from settings.json.
+#
+# Needed because the stand-down guard only stops this script ADDING entries —
+# anything a previous run already wrote keeps firing alongside the plugin's,
+# running zdev-notify twice per event. Explicit and opt-in: it edits the
+# operator's global Claude config, so it is never part of a plain install.
+#
+# Only entries whose command mentions zdev-notify are touched, and a hook
+# block left with no hooks is dropped so no empty scaffolding is orphaned.
+prune_claude_settings() {
+    if [[ ! -f "$SETTINGS" ]] || ! jq empty "$SETTINGS" 2>/dev/null; then
+        echo "claude: no usable $SETTINGS — nothing to prune."
+        return 0
+    fi
+    local before after doc
+    before=$(jq '[.hooks // {} | to_entries[] | .value[]? | .hooks[]?
+                  | select(.command // "" | test("zdev-notify"))] | length' "$SETTINGS")
+    if [[ "$before" -eq 0 ]]; then
+        echo "claude: no zdev-notify entries in $SETTINGS — nothing to prune."
+        return 0
+    fi
+    doc=$(jq '
+        .hooks |= (
+            with_entries(
+                .value |= (
+                    map(.hooks |= map(select((.command // "") | test("zdev-notify") | not)))
+                    | map(select((.hooks | length) > 0))
+                )
+            )
+            | with_entries(select((.value | length) > 0))
+        )
+    ' "$SETTINGS")
+    after=$(jq '[.hooks // {} | to_entries[] | .value[]? | .hooks[]?
+                 | select(.command // "" | test("zdev-notify"))] | length' <<<"$doc")
+    cp "$SETTINGS" "$SETTINGS.bak-zdev-prune"
+    printf '%s\n' "$doc" > "$SETTINGS"
+    echo "claude: pruned $((before - after)) zdev-notify entr(ies) from $SETTINGS (backup: $SETTINGS.bak-zdev-prune)"
+    echo "claude: the plugin's hooks/hooks.json now owns them — restart running sessions to pick it up."
+}
+
 install_claude() {
+    if plugin_supplies_hooks; then
+        echo "claude: zdev plugin already supplies the notify hooks — leaving $SETTINGS alone."
+        local dupes
+        dupes=$(jq '[.hooks // {} | to_entries[] | .value[]? | .hooks[]?
+                     | select(.command // "" | test("zdev-notify"))] | length' "$SETTINGS" 2>/dev/null || echo 0)
+        if [[ "${dupes:-0}" -gt 0 ]]; then
+            echo "claude: WARNING — $SETTINGS still has $dupes zdev-notify entr(ies); every event fires TWICE."
+            echo "claude:           remove them with: zdev-install-hooks --prune-settings"
+        fi
+        return 0
+    fi
     if [[ ! -d "$(dirname "$SETTINGS")" ]]; then
         echo "claude: no $(dirname "$SETTINGS") directory — Claude Code not set up on this machine; skipping."
         return 0
@@ -252,6 +332,11 @@ install_codex() {
     echo "codex: + appended notify = [\"$adapter_path\"] to $config"
     echo "codex: note — running Codex sessions pick up the new notify on restart."
 }
+
+if [[ "$PRUNE" -eq 1 ]]; then
+    prune_claude_settings
+    exit 0
+fi
 
 install_claude
 install_opencode
