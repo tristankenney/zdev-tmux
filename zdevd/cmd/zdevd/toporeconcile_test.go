@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tristankenney/zdev/zdevd/internal/hub"
 	"github.com/tristankenney/zdev/zdevd/internal/layout"
 	"github.com/tristankenney/zdev/zdevd/internal/proto"
 )
@@ -209,6 +211,59 @@ func TestReconcilerDefaults(t *testing.T) {
 	if r.applied {
 		t.Error("a fresh reconciler has not applied anything yet")
 	}
+}
+
+// The registration path is exercised, not grepped. The original gate matched
+// the literal bytes "Register(sub, nil)" in this file, which a comment, a
+// renamed variable or a nil-valued local all defeat — and since the hub now
+// normalizes a nil completion channel (TestRegisterToleratesNilRegDone owns
+// that regression, where the fix lives), what is left worth pinning here is
+// that Run's registration handshake terminates instead of hanging.
+func TestReconcilerRegistrationTerminates(t *testing.T) {
+	cfg := layout.DefaultTopoConfig()
+	cfg.Enabled = true
+
+	t.Run("already-stopped hub: Run gives up rather than blocking", func(t *testing.T) {
+		h := hub.NewHub(hub.Config{Debounce: time.Hour})
+		hctx, hcancel := context.WithCancel(context.Background())
+		hdone := make(chan error, 1)
+		go func() { hdone <- h.Run(hctx) }()
+		hcancel()
+		<-hdone
+
+		r := newTopoReconciler(h, nil, cfg, layout.DefaultPaneConfig(), t.TempDir())
+		done := make(chan error, 1)
+		go func() { done <- r.Run(context.Background()) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Run on a stopped hub returned %v, want nil", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Run blocked registering against a stopped hub")
+		}
+	})
+
+	t.Run("ctx cancelled: Run returns and does not leak the subscriber", func(t *testing.T) {
+		h := hub.NewHub(hub.Config{Debounce: time.Hour})
+		hctx, hcancel := context.WithCancel(context.Background())
+		defer hcancel()
+		go h.Run(hctx)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		r := newTopoReconciler(h, nil, cfg, layout.DefaultPaneConfig(), t.TempDir())
+		done := make(chan error, 1)
+		go func() { done <- r.Run(ctx) }()
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Run returned %v on cancel, want nil", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Run did not return after its context was cancelled")
+		}
+	})
 }
 
 func TestStateOptionConfigIsDefaultOff(t *testing.T) {
