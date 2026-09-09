@@ -440,6 +440,14 @@ func setupRenderer(ctx context.Context) (*rendererSetup, error) {
 	// byte-identical to today.
 	render.InitiativeEnabled = os.Getenv("ZDEV_SIDEBAR_INITIATIVE") == "1"
 
+	// OSC 8 hyperlinks on the PR and CI chips (default off): click ⚙ CI to
+	// open the repo's Actions, or the PR chip to open its pull requests. tmux
+	// carries the escape through (verified 3.7b) and it costs zero display
+	// cells, so alignment is unaffected — but not every terminal is
+	// well-behaved with unknown OSC sequences, hence the knob. Off ⇒
+	// byte-identical to today.
+	render.HyperlinksEnabled = os.Getenv("ZDEV_SIDEBAR_LINKS") == "1"
+
 	// Footer style (dogfood #4): full (worded, default) | off. The
 	// legacy compact glyph tally was deleted (calm lane B, 2026-08-18) —
 	// full won the dogfood, and compact's ◎ was the vocabulary's only

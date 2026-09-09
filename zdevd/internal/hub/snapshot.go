@@ -290,6 +290,7 @@ func buildSnapshot(st *state, seq int64, sentAt time.Time, now, nowMS int64) *pr
 			Status:           status,
 			Attention:        displayAtt,
 			Branch:           pd.Branch,
+			Repo:             st.projectRepos[n],
 			Ahead:            pd.Ahead,
 			Behind:           pd.Behind,
 			DirtyCount:       pd.DirtyCount,

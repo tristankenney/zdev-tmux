@@ -1720,6 +1720,7 @@ func projectEquals(a, b proto.Project) bool {
 	if a.Name != b.Name ||
 		a.Status != b.Status ||
 		a.Branch != b.Branch ||
+		a.Repo != b.Repo ||
 		a.Ahead != b.Ahead ||
 		a.Behind != b.Behind ||
 		a.DirtyCount != b.DirtyCount ||

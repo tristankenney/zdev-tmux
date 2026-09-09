@@ -424,6 +424,30 @@ introduces. The code-fix blockers landed as four file-disjoint worktrees:
 
 ## NEXT (~6 weeks)
 
+- **Clickable chips — OSC 8 hyperlinks in the sidebar** *(shipped
+  2026-09-10, `ZDEV_SIDEBAR_LINKS=1`, default off)* — stolen from
+  zdev-herdr's `[[link_handlers]]` plugin surface, which tmux has no
+  equivalent for. tmux does carry OSC 8 through to the terminal
+  (verified 3.7b: the escape survives into the pane and
+  `capture-pane -p` returns the visible text alone, so golden captures
+  never see the markup), and `ansi.StringWidth` counts the wrapper as
+  ZERO cells with `ansi.Truncate` refusing to cut inside it — so chip
+  alignment is unaffected. The PR chip opens the repo's pull requests,
+  the CI chip its Actions. `Project.Repo` (phase4-v27) carries the
+  resolved `owner/repo`, which the hub already held for the review
+  gauge, so no new probe exists. Slugs are validated to a plain
+  two-segment form, and a refused URI yields no link rather than a
+  mangled one.
+  - **Kill:** if a month of dogfooding produces no clicks — or any
+    terminal in use renders the escape visibly rather than swallowing
+    it — delete the knob, `internal/render/hyperlink.go`, and the two
+    `LinkBuffer` call sites. `Project.Repo` stays either way; it is
+    cheap and the review gauge already wanted it.
+  - **Watch:** whether a chip linking to `/pulls` is the right target
+    versus a specific PR. The wire carries counts, not numbers, so a
+    per-PR link would need another field — deliberately not built until
+    the generic page proves too coarse.
+
 - **Daemon-driven window topology — zdevd opens and closes windows**
   *(operator signal, 2026-08-21: "if zdev-core serves as the brain, it
   should then be open and closing windows in tmux based on what's

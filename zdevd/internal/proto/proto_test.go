@@ -96,8 +96,8 @@ func TestSnapshotCompactNoIndent(t *testing.T) {
 // --- Phase 3 tests ---
 
 func TestSchemaVersion_IsPhase4(t *testing.T) {
-	if SchemaVersion != "phase4-v26" {
-		t.Errorf("SchemaVersion = %q; want %q", SchemaVersion, "phase4-v26")
+	if SchemaVersion != "phase4-v27" {
+		t.Errorf("SchemaVersion = %q; want %q", SchemaVersion, "phase4-v27")
 	}
 }
 
@@ -199,6 +199,7 @@ func TestSchemaGolden(t *testing.T) {
 			ListeningPorts: []int{3000, 8080},
 			LastActivityTS: 1714838400,
 			WaitStartedTS:  1714838460,
+			Repo:           "payau/alpha",
 			PROpen:         1, PRFail: 0, PRPend: 1,
 			CelebrateUntil: 1714838500,
 			AgentStates:    map[string]Attention{"claude": "waiting"},

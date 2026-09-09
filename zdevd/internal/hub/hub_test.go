@@ -616,3 +616,42 @@ func TestRegisterToleratesNilRegDone(t *testing.T) {
 		}
 	})
 }
+
+// TestProjectEqualsRepo (phase4-v27) verifies projectEquals detects a changed
+// Repo slug. Without it the publish gate (hub.go, "!snapshotChanged &&
+// !clientsChanged && ...") suppresses a pass where ONLY the slug moved, and
+// h.lastSnap is not updated — so the new value stays invisible until some
+// other compared field happens to change, which on an idle project is
+// indefinite.
+//
+// Three documented workflows hit it. A fresh clone resolves to "" while the
+// clone is mid-flight and gets its real slug on the NEXT refresh, by which
+// time Names is identical. `git remote set-url` — the literal step in the
+// workspace "add a repo" recipe — moves the slug and nothing else, which is
+// worse than a missing link: the chip keeps pointing at the OLD repo, so a
+// click lands on someone else's GitHub page. And a refresh cut short by its
+// context leaves the tail of the list unmapped until the next one completes.
+func TestProjectEqualsRepo(t *testing.T) {
+	base := proto.Project{Name: "marketplace/pay-app", Status: "alive", Repo: "payau/pay-app"}
+
+	if !projectEquals(base, base) {
+		t.Error("identical projects (including Repo) should be equal")
+	}
+
+	// The re-pointed-origin case: only the owner moves.
+	repointed := base
+	repointed.Repo = "someoneelse/pay-app"
+	if projectEquals(base, repointed) {
+		t.Error("a changed Repo must not compare equal — the chip would keep linking to the old repo")
+	}
+
+	// The fresh-clone case: unresolved, then resolved.
+	unresolved := base
+	unresolved.Repo = ""
+	if projectEquals(base, unresolved) {
+		t.Error("gaining a Repo must not compare equal — the link would never appear")
+	}
+	if projectEquals(unresolved, base) {
+		t.Error("comparison must be symmetric")
+	}
+}

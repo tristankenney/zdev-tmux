@@ -1,6 +1,9 @@
 package render
 
-import "strings"
+import (
+	"bytes"
+	"strings"
+)
 
 // OSC 8 hyperlinks — the sidebar's chips become clickable where the terminal
 // supports it, and identical text where it does not.
@@ -73,4 +76,61 @@ func safeURI(uri string) bool {
 		return true
 	}
 	return false
+}
+
+// LinkBuffer wraps whatever a chip renderer just wrote into buf so it opens
+// uri when clicked. Applied to a chip's rendered BUFFER rather than threaded
+// through each chip's signature: chip content already carries its own SGR
+// codes, OSC 8 wraps arbitrary content happily, and this way no chip function
+// or its tests change shape to gain a link.
+//
+// A no-op when links are disabled, the buffer is empty, or the uri is refused
+// — so a project with no resolved remote renders exactly today's chip.
+func LinkBuffer(buf *bytes.Buffer, uri string) {
+	if !HyperlinksEnabled || uri == "" || buf.Len() == 0 {
+		return
+	}
+	linked := Hyperlink(buf.String(), uri)
+	if linked == buf.String() {
+		return // refused; leave the chip alone
+	}
+	buf.Reset()
+	buf.WriteString(linked)
+}
+
+// RepoPullsURL / RepoActionsURL turn the wire's owner/repo slug
+// (proto.Project.Repo, resolved by the Lister) into the page a chip should
+// open. Empty for an empty slug, and for anything that is not a plain
+// two-segment slug — the slug is probe-derived, so it is validated here
+// rather than trusted into a URL.
+func RepoPullsURL(slug string) string   { return githubRepoURL(slug, "pulls") }
+func RepoActionsURL(slug string) string { return githubRepoURL(slug, "actions") }
+
+func githubRepoURL(slug, page string) string {
+	if !plainSlug(slug) {
+		return ""
+	}
+	return "https://github.com/" + slug + "/" + page
+}
+
+// plainSlug accepts exactly "owner/name" with the character set GitHub allows,
+// so a surprising resolver result cannot smuggle a path or a query into the
+// URL. Anything else yields no link at all.
+func plainSlug(slug string) bool {
+	owner, name, found := strings.Cut(slug, "/")
+	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
+		return false
+	}
+	for _, part := range [2]string{owner, name} {
+		for i := 0; i < len(part); i++ {
+			c := part[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z',
+				c >= '0' && c <= '9', c == '-', c == '_', c == '.':
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }

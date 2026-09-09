@@ -1183,11 +1183,12 @@ func TestRecomputeAgents_CapturesOnTransition(t *testing.T) {
 		}
 	})
 
-	// Test H: proto.SchemaVersion must be phase4-v26 (focus-loop wire
-	// metadata — Project.Intent/BdReady, ZDEV_SIDEBAR_INITIATIVE).
-	t.Run("H_schema_version_is_phase4_v26", func(t *testing.T) {
-		if proto.SchemaVersion != "phase4-v26" {
-			t.Errorf("SchemaVersion = %q; want %q", proto.SchemaVersion, "phase4-v26")
+	// Test H: proto.SchemaVersion must be phase4-v27 (Project.Repo — the
+	// resolved owner/repo slug, so a consumer can build a URL without a
+	// probe of its own).
+	t.Run("H_schema_version_is_phase4_v27", func(t *testing.T) {
+		if proto.SchemaVersion != "phase4-v27" {
+			t.Errorf("SchemaVersion = %q; want %q", proto.SchemaVersion, "phase4-v27")
 		}
 	})
 }

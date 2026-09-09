@@ -203,7 +203,11 @@ import (
 // zdev-sidebar-render instances after deploying the new zdevd binary.
 // phase4-v26 (2026-08-22): adds the hub-owned pane-request projection used by
 // daemon topology. Both binaries must rebuild together.
-const SchemaVersion = "phase4-v26"
+// phase4-v27 (2026-09-10): adds Project.Repo, the resolved GitHub
+// owner/repo slug. Already known to the hub (state.projectRepos, resolved off
+// the hub goroutine by the Lister and used to group the review gauge) — this
+// only puts it on the wire so a renderer can build a URL without probing.
+const SchemaVersion = "phase4-v27"
 
 // Wait cost-classes for Project.WaitKind. The distinction drives triage
 // ranking: clearing a permission prompt costs the user seconds and
@@ -527,24 +531,36 @@ const WaitKindWorking = "working"
 const WaitKindDone = "done"
 
 type Project struct {
-	Name             string    `json:"name"`
-	Status           string    `json:"status"`
-	Attention        Attention `json:"attention,omitempty"`
-	Branch           string    `json:"branch,omitempty"`
-	Ahead            int       `json:"ahead,omitempty"`
-	Behind           int       `json:"behind,omitempty"`
-	DirtyCount       int       `json:"dirty_count,omitempty"`
-	ShellCmd         string    `json:"shell_cmd,omitempty"`
-	ListeningPorts   []int     `json:"ports,omitempty"`
-	LastActivityTS   int64     `json:"last_activity_ts,omitempty"`  // unix seconds; 0 = unknown
-	WaitStartedTS    int64     `json:"wait_started_ts,omitempty"`   // 0 = not waiting
-	WaitAcknowledged bool      `json:"wait_acknowledged,omitempty"` // true when the user has visited this session past the highest crossed wait-tier; suppresses urgent decoration in the renderer.
-	WaitKind         string    `json:"wait_kind,omitempty"`         // cost-class of the current wait: WaitKindPermission | WaitKindDecision | "" (unknown → treated as decision)
-	WaitSummary      string    `json:"wait_summary,omitempty"`      // the agent's own last line at wait time (hook-sourced, single line, capped) — the triage gist; "" when the hook didn't carry one
-	PROpen           int       `json:"pr_open,omitempty"`
-	PRFail           int       `json:"pr_fail,omitempty"`
-	PRPend           int       `json:"pr_pend,omitempty"`
-	CelebrateUntil   int64     `json:"celebrate_until,omitempty"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	Attention Attention `json:"attention,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
+	// Repo is the resolved GitHub "owner/repo" for this project. Purely
+	// derived — the Lister resolves it and the hub already stores it for the
+	// review gauge. On the wire so a consumer can construct a URL (a
+	// hyperlinked chip) without a probe of its own.
+	//
+	// "" means UNRESOLVED, never "this project has no remote": it is also
+	// empty when repo resolution is disabled (no workspace configured), when
+	// the lister's context expired mid-refresh, or before the first refresh
+	// has run. The Lister's own API keeps that distinction (Repo returns
+	// ("", true) for a known-but-remoteless project); the wire flattens it,
+	// so a consumer must not read "" as evidence and suppress work on it.
+	Repo             string `json:"repo,omitempty"`
+	Ahead            int    `json:"ahead,omitempty"`
+	Behind           int    `json:"behind,omitempty"`
+	DirtyCount       int    `json:"dirty_count,omitempty"`
+	ShellCmd         string `json:"shell_cmd,omitempty"`
+	ListeningPorts   []int  `json:"ports,omitempty"`
+	LastActivityTS   int64  `json:"last_activity_ts,omitempty"`  // unix seconds; 0 = unknown
+	WaitStartedTS    int64  `json:"wait_started_ts,omitempty"`   // 0 = not waiting
+	WaitAcknowledged bool   `json:"wait_acknowledged,omitempty"` // true when the user has visited this session past the highest crossed wait-tier; suppresses urgent decoration in the renderer.
+	WaitKind         string `json:"wait_kind,omitempty"`         // cost-class of the current wait: WaitKindPermission | WaitKindDecision | "" (unknown → treated as decision)
+	WaitSummary      string `json:"wait_summary,omitempty"`      // the agent's own last line at wait time (hook-sourced, single line, capped) — the triage gist; "" when the hook didn't carry one
+	PROpen           int    `json:"pr_open,omitempty"`
+	PRFail           int    `json:"pr_fail,omitempty"`
+	PRPend           int    `json:"pr_pend,omitempty"`
+	CelebrateUntil   int64  `json:"celebrate_until,omitempty"`
 	// AgentStates is the per-agent attention map keyed by lowercase agent
 	// name (from the registry's [[agent]].name). Replaced the static
 	// AgentClaude/AgentPi pair in phase4-v8; the legacy projections rode

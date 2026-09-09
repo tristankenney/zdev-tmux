@@ -1246,11 +1246,13 @@ func renderMetadataRow(buf *bytes.Buffer, p *proto.Project, current string, widt
 		celebrating := chipCelebrate(&subPR, p.CelebrateUntil, now, animator.BreathFrame())
 		if !celebrating {
 			chipPRAggregate(&subPR, p.PROpen, p.PRFail, p.PRPend, false)
+			LinkBuffer(&subPR, RepoPullsURL(p.Repo))
 		}
 
 		// Sub-group 3: CI — binary chip; failing-check names live on the
 		// dedicated scrolling row (renderFailingChecksRow) below.
 		chipCI(&subCI, p.CIStatus, p.CIConclusion)
+		LinkBuffer(&subCI, RepoActionsURL(p.Repo))
 
 		joinNonEmpty(inner, []*bytes.Buffer{&subBranch, &subPR, &subCI}, domainSep())
 	})
