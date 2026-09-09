@@ -22,6 +22,8 @@
 //	zdev-show time --json      # structured time-spine surface
 //	zdev-show held             # the focus loop's held set (M-. parks land here)
 //	zdev-show held --json      # structured held set
+//	zdev-show pressure         # boundary-visible drifting work
+//	zdev-show pressure --json  # structured pressure register
 //	zdev-show initiatives      # per-initiative digest, human-readable
 //	zdev-show initiatives --json  # versioned machine contract (docs/initiatives-digest.md)
 //
@@ -38,6 +40,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -46,6 +49,7 @@ import (
 	"github.com/tristankenney/zdev/zdevd/internal/diag"
 	"github.com/tristankenney/zdev/zdevd/internal/hub"
 	"github.com/tristankenney/zdev/zdevd/internal/platform"
+	"github.com/tristankenney/zdev/zdevd/internal/pressure"
 	"github.com/tristankenney/zdev/zdevd/internal/proto"
 	"github.com/tristankenney/zdev/zdevd/internal/render"
 	"github.com/tristankenney/zdev/zdevd/internal/socket"
@@ -157,6 +161,18 @@ func run() int {
 	// skips the session the caller is already in. An empty queue prints
 	// nothing and exits 0 — the consumer tests for empty output, matching
 	// the "no context cases exit 0" convention above.
+	// `status` is the one-liner for tmux's status-right — the fleet and the
+	// focus anchor with no pane, so they are visible in every window and at
+	// every width, including below ZDEV_SIDEBAR_THRESHOLD where the sidebar
+	// is suppressed. Prints nothing at all for an idle fleet, so a bar
+	// interpolating it stays clean. See internal/render.StatusLine.
+	if os.Args[1] == "status" {
+		if line := render.StatusLine(snap, time.Now().Unix()); line != "" {
+			fmt.Println(line)
+		}
+		return 0
+	}
+
 	if os.Args[1] == "next" {
 		for _, name := range nextNames(snap) {
 			fmt.Println(name)
@@ -233,6 +249,29 @@ func run() int {
 			fmt.Println(out)
 		default:
 			fmt.Print(formatHeld(snap, time.Now().Unix()))
+		}
+		return 0
+	}
+
+	if os.Args[1] == "pressure" {
+		items := pressure.Promotions(snap, time.Now().Unix())
+		if bumps, err := pressure.Load(filepath.Join(platform.DataDir(), "pressure-defers.json")); err == nil {
+			items = pressure.ApplyBumps(items, bumps)
+		}
+		if len(os.Args) >= 3 && os.Args[2] == "--json" {
+			if items == nil {
+				items = []pressure.Item{}
+			}
+			out, err := json.Marshal(items)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "zdev-show: %v\n", err)
+				return 1
+			}
+			fmt.Println(string(out))
+		} else {
+			for _, item := range items {
+				fmt.Printf("%3d  %-12s %-24s %s\n", item.Score, item.Kind, item.Project, item.Title)
+			}
 		}
 		return 0
 	}
