@@ -100,6 +100,74 @@ _row_sort() {
     }' | LC_ALL=C sort | cut -f2
 }
 
+# _recent_rows — the most recently ATTENDED sessions, newest first, emitted
+# above the grouped list so "take me back to what I was just in" is one
+# keystroke instead of a search.
+#
+# session_last_attached is the signal, NOT session_activity. Activity advances
+# on pane OUTPUT, and a VISIBLE sidebar pane renders continuously at
+# IdleSleepMS — so activity ranks whatever is on screen right now above
+# everything you might actually want to switch TO. Measured 2026-09-09:
+# unattended sessions stale correctly (up to 7484s) only because the renderer
+# sleeps an hour in invisible panes, which makes activity a property of
+# visibility rather than of work. A session that has NEVER been attached (an
+# agent that worked while you were away) falls back to its activity so it can
+# still surface at all; the attention-ranked path stays M-a / M-n.
+#
+# The grouped list below is left completely intact — a recent row is a
+# shortcut, not a replacement. Reordering the main list by recency would put
+# every project in a different place on every invocation and destroy the
+# spatial recall the grouped order exists to provide.
+_recent_rows() {
+    [ -n "${TMUX:-}" ] || return 0
+    limit="${ZDEV_PICK_RECENT:-5}"
+    case "$limit" in (''|*[!0-9]*) return 0 ;; esac
+    [ "$limit" -gt 0 ] || return 0
+
+    current=$(tmux display-message -p '#{session_name}' 2>/dev/null || echo "")
+    now=$(date +%s)
+
+    # Projects first (bare names), then sessions (3 tab-separated fields) —
+    # told apart by field count, the same discrimination build_list uses.
+    awk -F"$TAB" -v T="$TAB" -v cur="$current" -v now="$now" -v lim="$limit" \
+        -v cDim=$'\033[90m' -v cR=$'\033[0m' '
+        # session_name(): "/"→"-" and "."→"_", mirroring proto.SessionKey.
+        function skey(s,   r) { r=s; gsub(/\//,"-",r); gsub(/\./,"_",r); return r }
+        function age(sec,   m,h,d) {
+            if (sec < 60)    return sec "s"
+            m = int(sec/60);  if (m < 60) return m "m"
+            h = int(m/60);    if (h < 24) return h "h"
+            d = int(h/24);    return d "d"
+        }
+        NF==1 && $0!="" { proj[skey($0)]=$0; next }
+        NF>=3 {
+            sess=$1; la=$2+0; act=$3+0
+            if (sess==cur) next            # already there
+            if (!(sess in proj)) next      # not a switchable project row
+            # Never attached ⇒ fall back to activity, so an agent that worked
+            # while you were away can still appear.
+            ts = (la > 0) ? la : act
+            if (ts <= 0) next
+            n++; k[n]=ts; v[n]=proj[sess]
+        }
+        END {
+            # Small n (session count), so an insertion sort is plenty and
+            # keeps this dependency-free.
+            for (i=2; i<=n; i++) {
+                kk=k[i]; vv=v[i]; j=i-1
+                while (j>0 && k[j] < kk) { k[j+1]=k[j]; v[j+1]=v[j]; j-- }
+                k[j+1]=kk; v[j+1]=vv
+            }
+            if (n < 1) exit
+            m = (n < lim) ? n : lim
+            printf "%srecent%s%sP%s%s\n", cDim, cR, T, T, v[1]
+            for (i=1; i<=m; i++)
+                printf "  %s%s  %s%s%sP%s%s\n", v[i], cDim, age(now-k[i]), cR, T, T, v[i]
+        }
+    ' <(projects_feed) \
+      <(tmux list-sessions -F "#{session_name}${TAB}#{session_last_attached}${TAB}#{session_activity}" 2>/dev/null)
+}
+
 # Live team members, one per line: <lead_project>\t<member>\t<status>\t<wid>.
 # Sourced from the daemon (same as the sidebar). Empty outside tmux — nesting
 # only helps where we can actually jump — or when no team is live.
@@ -229,7 +297,7 @@ build_list() {
 # ctrl-/ toggles it off entirely.
 _preview='d="${ZDEV_WORKSPACE:-$HOME/workspace}/$(printf %s {3} | cut -d/ -f1)"
 if [ -f "$d/INITIATIVE.md" ]; then head -40 "$d/INITIATIVE.md"; fi'
-SEL=$(build_list | fzf --prompt='go › ' --height=100% --reverse --ansi \
+SEL=$({ _recent_rows; build_list; } | fzf --prompt='go › ' --height=100% --reverse --ansi \
         --delimiter="$TAB" --with-nth=1 \
         --preview="$_preview" --preview-window='right,45%,border-left,wrap' \
         --bind='ctrl-/:toggle-preview') || exit 0
