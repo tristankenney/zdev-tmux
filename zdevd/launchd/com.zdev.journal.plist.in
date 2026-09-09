@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE FILE — do NOT install directly.
+  Placeholder substituted by zdevd/Makefile $(JOURNAL_PLIST_BUILT) rule:
+    @HOME@  → $HOME at install time
+  Output: zdevd/bin/com.zdev.journal.plist, symlinked into ~/Library/LaunchAgents/.
+
+  Behaviour:
+    Runs `zdev-journal --push` every 15 minutes. Commits the workspace-root
+    JOURNAL repo (group INITIATIVE.md / notes/ / AGENTS.md / bd data) and
+    pushes it. See ~/.local/bin/zdev-journal for the safety rules — it only
+    ever adds a commit, skips files still being written, skips nested repos,
+    and refuses to run outside the journal.
+
+  Why 15 minutes rather than hourly like the reaper: the failure this fixes
+  is losing a morning's notes, and the cost of a run with nothing to do is
+  one `git status`. Measured 2026-09-09 before it existed: 49 files
+  uncommitted for two days and 113 commits unpushed for over two weeks.
+
+  ProcessType is deliberately NOT "Background", and RunAtLoad is true, for
+  exactly the reasons documented on com.zdev.reaper: a Background-class
+  StartInterval job gets deferred across sleep/battery and can silently stop
+  firing for days, and a login should be a guaranteed run so a missed
+  interval self-heals.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zdev.journal</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@HOME@/.local/bin/zdev-journal</string>
+    <string>--push</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>@HOME@/Library/Logs/zdev/journal.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>@HOME@/Library/Logs/zdev/journal.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- System dirs FIRST, same reasoning as the reaper: /usr/bin and /bin
+         are root-owned, so a standard command name (git, date, stat) cannot
+         be shadowed by a hijacked binary in a group-writable dir that this
+         job would then run. zdev-journal is invoked by ABSOLUTE path above,
+         so leading with system dirs costs it nothing.
+
+         git is the one dependency worth naming: on a stock macOS it lives in
+         /usr/bin (the Xcode shim), and Homebrew's is picked up after. -->
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:@HOME@/.local/bin</string>
+    <key>LANG</key>
+    <string>en_US.UTF-8</string>
+  </dict>
+</dict>
+</plist>

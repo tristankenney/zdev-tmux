@@ -74,6 +74,9 @@ ifeq ($(UNAME_S),Darwin)
   REAPER_PLIST_SRC   := $(ZDEVD_DIR)/launchd/com.zdev.reaper.plist.in
   REAPER_PLIST_BUILT := $(BIN_DIR)/com.zdev.reaper.plist
   REAPER_PLIST_DST   := $(LAUNCH_AGENTS)/com.zdev.reaper.plist
+  JOURNAL_PLIST_SRC   := $(ZDEVD_DIR)/launchd/com.zdev.journal.plist.in
+  JOURNAL_PLIST_BUILT := $(BIN_DIR)/com.zdev.journal.plist
+  JOURNAL_PLIST_DST   := $(LAUNCH_AGENTS)/com.zdev.journal.plist
 else ifeq ($(UNAME_S),Linux)
   # Linux — systemd user units + XDG directories.
   XDG_STATE_HOME ?= $(HOME)/.local/state
@@ -122,6 +125,7 @@ BENCH_IDLE_THRESHOLD ?= 10
 
 LABEL  := com.zdev.zdevd
 REAPER_LABEL  := com.zdev.reaper
+JOURNAL_LABEL := com.zdev.journal
 DOMAIN := gui/$(shell id -u)
 
 .PHONY: all build test check vulncheck golden bench-idle bench-workday bench-workday-verdict drift-check live-test install uninstall use-go kill-renderers clean help start stop restart status logs
@@ -285,6 +289,12 @@ $(PLIST_BUILT): $(PLIST_SRC) Makefile $(SUBST_STAMP)
 	sed -e '/^<!--$$/,/^-->$$/d' -e 's|@REPO_ROOT@|$(REPO_ROOT)|g' -e 's|@HOME@|$(HOME)|g' "$(PLIST_SRC)" > "$(PLIST_BUILT)"
 	plutil -lint "$(PLIST_BUILT)"
 
+# JOURNAL_PLIST_BUILT — substituted journal-committer plist. Same pattern.
+$(JOURNAL_PLIST_BUILT): $(JOURNAL_PLIST_SRC) Makefile $(SUBST_STAMP)
+	@mkdir -p "$(BIN_DIR)"
+	sed -e '/^<!--$$/,/^-->$$/d' -e 's|@HOME@|$(HOME)|g' "$(JOURNAL_PLIST_SRC)" > "$(JOURNAL_PLIST_BUILT)"
+	plutil -lint "$(JOURNAL_PLIST_BUILT)"
+
 # REAPER_PLIST_BUILT — substituted reaper plist. Same pattern as PLIST_BUILT.
 $(REAPER_PLIST_BUILT): $(REAPER_PLIST_SRC) Makefile $(SUBST_STAMP)
 	@mkdir -p "$(BIN_DIR)"
@@ -428,7 +438,7 @@ live-test:
 	cd "$(ZDEVD_DIR)" && go test -tags live -count=1 -timeout 90s ./...
 
 ifeq ($(UNAME_S),Darwin)
-install: build $(PLIST_BUILT) $(REAPER_PLIST_BUILT)
+install: build $(PLIST_BUILT) $(REAPER_PLIST_BUILT) $(JOURNAL_PLIST_BUILT)
 	@mkdir -p "$(LOCAL_BIN)" "$(LAUNCH_AGENTS)" "$(LOG_DIR)" "$(SOCKET_DIR)"
 	@chmod 700 "$(LOG_DIR)" "$(SOCKET_DIR)"
 	@# Symlink Go binaries into PATH.
@@ -438,17 +448,22 @@ install: build $(PLIST_BUILT) $(REAPER_PLIST_BUILT)
 	ln -sf "$(GO_ROUND)" "$(LOCAL_BIN)/zdev-round"
 	ln -sf "$(GO_PARK)" "$(LOCAL_BIN)/zdev-park"
 	ln -sf "$(GO_BOUNDARY)" "$(LOCAL_BIN)/zdev-boundary"
+	ln -sf "$(REPO_ROOT)/bin/zdev-journal" "$(LOCAL_BIN)/zdev-journal"
 	@# Stable tmux-conf path (see TMUX_CONF_LINK).
 	@mkdir -p "$(dir $(TMUX_CONF_LINK))"
 	ln -sfn "$(TMUX_CONF_SRC)" "$(TMUX_CONF_LINK)"
 	@# Symlink substituted plists into LaunchAgents.
 	ln -sf "$(PLIST_BUILT)" "$(PLIST_DST)"
 	ln -sf "$(REAPER_PLIST_BUILT)" "$(REAPER_PLIST_DST)"
+	ln -sf "$(JOURNAL_PLIST_BUILT)" "$(JOURNAL_PLIST_DST)"
 	@# launchctl bootout-then-bootstrap for zdevd (Pitfall B).
 	bash "$(ZDEVD_DIR)/scripts/install-launchd.sh"
 	@# Reaper job — same script, which owns the bootout-settle-bootstrap race.
 	bash "$(ZDEVD_DIR)/scripts/install-launchd.sh" "$(REAPER_LABEL)"
 	@echo "install: reaper job bootstrapped (hourly, $${ZDEV_REAP_AFTER_HOURS:-24}h threshold)"
+	@# Journal committer — commits + pushes the workspace journal every 15min.
+	bash "$(ZDEVD_DIR)/scripts/install-launchd.sh" "$(JOURNAL_LABEL)"
+	@echo "install: journal job bootstrapped (every 15min, commits + pushes ~/workspace)"
 	@# Sapling pre-push hook (Pitfall D).
 	bash "$(ZDEVD_DIR)/scripts/install-prepush.sh"
 	@echo "install: complete. Open a tmux pane via zdev-sidebar-toggle to verify."
@@ -456,8 +471,9 @@ install: build $(PLIST_BUILT) $(REAPER_PLIST_BUILT)
 uninstall:
 	@launchctl bootout "$(DOMAIN)/$(LABEL)" 2>/dev/null || true
 	@launchctl bootout "$(DOMAIN)/$(REAPER_LABEL)" 2>/dev/null || true
-	@rm -f "$(PLIST_DST)" "$(REAPER_PLIST_DST)"
-	@rm -f "$(RENDER_LINK)" "$(LOCAL_BIN)/zdevd" "$(LOCAL_BIN)/zdev-show" "$(LOCAL_BIN)/zdev-round" "$(LOCAL_BIN)/zdev-park" "$(LOCAL_BIN)/zdev-boundary"
+	@launchctl bootout "$(DOMAIN)/$(JOURNAL_LABEL)" 2>/dev/null || true
+	@rm -f "$(PLIST_DST)" "$(REAPER_PLIST_DST)" "$(JOURNAL_PLIST_DST)"
+	@rm -f "$(RENDER_LINK)" "$(LOCAL_BIN)/zdevd" "$(LOCAL_BIN)/zdev-show" "$(LOCAL_BIN)/zdev-round" "$(LOCAL_BIN)/zdev-park" "$(LOCAL_BIN)/zdev-boundary" "$(LOCAL_BIN)/zdev-journal"
 	@echo "uninstall: complete."
 else
 install: build $(ZDEVD_UNIT_BUILT) $(REAPER_UNIT_BUILT) $(REAPER_TIMER_BUILT)
@@ -473,6 +489,7 @@ install: build $(ZDEVD_UNIT_BUILT) $(REAPER_UNIT_BUILT) $(REAPER_TIMER_BUILT)
 	ln -sf "$(GO_ROUND)" "$(LOCAL_BIN)/zdev-round"
 	ln -sf "$(GO_PARK)" "$(LOCAL_BIN)/zdev-park"
 	ln -sf "$(GO_BOUNDARY)" "$(LOCAL_BIN)/zdev-boundary"
+	ln -sf "$(REPO_ROOT)/bin/zdev-journal" "$(LOCAL_BIN)/zdev-journal"
 	@# Symlink substituted unit files into ~/.config/systemd/user.
 	ln -sf "$(ZDEVD_UNIT_BUILT)" "$(ZDEVD_UNIT_DST)"
 	ln -sf "$(REAPER_UNIT_BUILT)" "$(REAPER_UNIT_DST)"
@@ -502,7 +519,7 @@ uninstall:
 	@systemctl --user disable --now zdev-reaper.timer 2>/dev/null || true
 	@rm -f "$(ZDEVD_UNIT_DST)" "$(REAPER_UNIT_DST)" "$(REAPER_TIMER_DST)"
 	@systemctl --user daemon-reload 2>/dev/null || true
-	@rm -f "$(RENDER_LINK)" "$(LOCAL_BIN)/zdevd" "$(LOCAL_BIN)/zdev-show" "$(LOCAL_BIN)/zdev-round" "$(LOCAL_BIN)/zdev-park" "$(LOCAL_BIN)/zdev-boundary"
+	@rm -f "$(RENDER_LINK)" "$(LOCAL_BIN)/zdevd" "$(LOCAL_BIN)/zdev-show" "$(LOCAL_BIN)/zdev-round" "$(LOCAL_BIN)/zdev-park" "$(LOCAL_BIN)/zdev-boundary" "$(LOCAL_BIN)/zdev-journal"
 	@echo "uninstall: complete."
 endif
 

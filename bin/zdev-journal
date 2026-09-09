@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# zdev journal — keep the workspace-root JOURNAL repo current.
+#
+# The journal versions group metadata only (every group's INITIATIVE.md,
+# notes/, AGENTS.md/CLAUDE.md, .zdev marker and bd data — see its whitelist
+# .gitignore). Its history is meant to outlive wound-down initiatives, which
+# only works if it is actually committed and actually pushed. Measured
+# 2026-09-09: 49 files uncommitted for two days and 113 commits unpushed for
+# over two weeks. Hand-committing is the step that gets skipped.
+#
+#   zdev-journal [--dry-run] [--push] [--quiet-secs N]
+#
+# Designed to be safe on a timer:
+#   - it only ever ADDS a commit; never amends, rebases, resets or force-pushes;
+#   - the whitelist .gitignore is the containment boundary — `git add -A` in the
+#     journal root cannot reach a member repo's own files;
+#   - QUIESCENCE: a file modified within the last N seconds is left for the
+#     next run, so a note being typed is never committed mid-sentence;
+#   - a flock keeps overlapping timer fires from racing;
+#   - it refuses to run anywhere that does not look like the journal.
+#
+# Bash 3.2 compatible (no assoc arrays, no mapfile).
+set -uo pipefail
+
+WORKSPACE="${ZDEV_WORKSPACE:-$HOME/workspace}"
+QUIET_SECS="${ZDEV_JOURNAL_QUIET_SECS:-120}"
+# Size guard. The journal is prose and metadata whose history outlives the
+# initiatives it describes — and git history cannot be trimmed later without a
+# rewrite. The first dry run offered a 5.3 MB .tsv.gz export and a 1.4 MB HTML
+# capture (2026-09-09). A blob that large is a deliberate decision, not
+# something a timer should make: these are reported and left for a human.
+MAX_KB="${ZDEV_JOURNAL_MAX_KB:-512}"
+LOG="${ZDEV_JOURNAL_LOG:-$HOME/Library/Logs/zdev/journal.log}"
+
+DRY=0
+PUSH=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY=1 ;;
+        --push)    PUSH=1 ;;
+        --quiet-secs) shift; QUIET_SECS="${1:-120}" ;;
+        -h|--help)
+            sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *) echo "zdev-journal: unknown argument $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# NEVER block on credentials. There is no SSH agent under launchd, so an
+# interactive prompt would hang the timer job indefinitely rather than fail —
+# observed on the first run 2026-09-09. Fail fast instead; the commit is
+# already safe locally and the next run retries.
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=10}"
+
+die() { echo "zdev-journal: $*" >&2; exit 1; }
+log() {
+    # Timer runs are unattended; keep a trail. Interactive runs also print.
+    mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"
+}
+
+[ -d "$WORKSPACE/.git" ] || die "$WORKSPACE is not a git repo (set ZDEV_WORKSPACE)"
+cd "$WORKSPACE" || die "cannot enter $WORKSPACE"
+
+# Refuse to run in anything that is not the journal. The header comment in its
+# .gitignore is the marker: a member repo or an unrelated checkout will not
+# carry it, so a mis-set ZDEV_WORKSPACE cannot make this commit somebody
+# else's working tree.
+grep -q 'JOURNAL' .gitignore 2>/dev/null \
+    || die "$WORKSPACE/.gitignore has no JOURNAL header — refusing to commit here"
+
+# Serialize timer fires. flock is Linux-only; on macOS use a mkdir lock, which
+# is atomic on every filesystem that matters here.
+LOCK="${TMPDIR:-/tmp}/zdev-journal.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+    # A stale lock from a killed run would block forever; 10 minutes is far
+    # longer than a commit takes.
+    if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
+        rmdir "$LOCK" 2>/dev/null || true
+        mkdir "$LOCK" 2>/dev/null || die "could not take the lock"
+    else
+        exit 0   # another run holds it; nothing to say
+    fi
+fi
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+
+now=$(date +%s)
+PENDING=""
+oversize=""
+
+# --untracked-files=all so new files inside a new directory are listed
+# individually — a directory has no useful mtime for the quiescence check.
+staged=0
+skipped=0
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    # Porcelain v1: XY<space>path, with " -> " for renames.
+    path="${line:3}"
+    case "$line" in
+        R*|*" -> "*) path="${line##* -> }" ;;
+    esac
+    # Strip the quoting git applies to paths with odd characters.
+    case "$path" in
+        \"*\") path=$(printf '%b' "${path%\"}"); path="${path#\"}" ;;
+    esac
+    [ -n "$path" ] || continue
+
+    # NEVER stage a nested git repo. The journal's whitelist un-ignores all
+    # directories (`!*/`), so a root repo that nobody has added an exclude
+    # line for yet shows up here as one untracked DIRECTORY — and `git add`
+    # on that silently records a submodule gitlink instead of files. Caught
+    # on the first dry run 2026-09-09, which offered to stage zdev-core/,
+    # zdev-herdr/ and zdev-tmux/. A new root repo appears before anyone
+    # updates .gitignore, so this guard has to be structural, not a list.
+    probe="${path%/}"
+    if [ -e "$probe/.git" ]; then
+        skipped=$(( skipped + 1 ))
+        continue
+    fi
+
+    if [ -f "$path" ]; then
+        sz=$(stat -f %z "$path" 2>/dev/null || stat -c %s "$path" 2>/dev/null || echo 0)
+        if [ "$sz" -gt $(( MAX_KB * 1024 )) ]; then
+            oversize="${oversize}  $(( sz / 1024 )) KB  $path
+"
+            continue
+        fi
+    fi
+
+    if [ -e "$path" ]; then
+        mt=$(stat -f %m "$path" 2>/dev/null || stat -c %Y "$path" 2>/dev/null || echo 0)
+        if [ "$mt" -gt 0 ] && [ $(( now - mt )) -lt "$QUIET_SECS" ]; then
+            skipped=$(( skipped + 1 ))
+            continue   # still being written; next run takes it
+        fi
+    fi
+    # A deletion has no mtime and needs no quiescence: it is already intent.
+    if (( DRY )); then
+        echo "  would stage $path"
+        PENDING="${PENDING}${path}
+"
+    else
+        git add -- "$path" 2>/dev/null || true
+    fi
+    staged=$(( staged + 1 ))
+done < <(git status --porcelain --untracked-files=all)
+
+if [ "$staged" -eq 0 ]; then
+    if (( DRY )); then
+        echo "journal: nothing to commit ($skipped file(s) still settling)"
+    fi
+    # Even with nothing to commit there may be unpushed history.
+    if (( PUSH )) && [ "$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo 0)" -gt 0 ]; then
+        if (( DRY )); then
+            echo "  would push $(git rev-list --count '@{upstream}..HEAD') commit(s)"
+        else
+            git push --quiet && log "journal: pushed (no new commit)"
+        fi
+    fi
+    exit 0
+fi
+
+# A generated subject cannot match the hand-written entries in this history
+# ("bowens: the Adyen 3DS re-derivation, and what it corrects..."), so it does
+# not pretend to: it says what it is, counts what moved, and leaves the
+# reasoning to the notes themselves. The body lists the paths so a later
+# reader can find the change without diffing.
+summarize() {
+    local notes=0 inits=0 beads=0 other=0 p
+    while IFS= read -r p; do
+        case "$p" in
+            */notes/*)        notes=$(( notes + 1 )) ;;
+            */INITIATIVE.md)  inits=$(( inits + 1 )) ;;
+            */.beads/*)       beads=$(( beads + 1 )) ;;
+            *)                other=$(( other + 1 )) ;;
+        esac
+    done < <(if (( DRY )); then printf '%s' "$PENDING"; else git diff --cached --name-only; fi)
+    local parts=""
+    [ "$inits" -gt 0 ] && parts="${parts}${parts:+, }${inits} initiative update(s)"
+    [ "$notes" -gt 0 ] && parts="${parts}${parts:+, }${notes} note(s)"
+    [ "$beads" -gt 0 ] && parts="${parts}${parts:+, }${beads} bd change(s)"
+    [ "$other" -gt 0 ] && parts="${parts}${parts:+, }${other} other"
+    echo "${parts:-no changes}"
+}
+
+if [ -n "$oversize" ]; then
+    printf 'journal: SKIPPED %s over %s KB — commit by hand if they belong in permanent history:\n%s' \
+        "$(printf '%s' "$oversize" | grep -c .)" "$MAX_KB" "$oversize" >&2
+fi
+
+if (( DRY )); then
+    echo "journal: would commit — $(summarize)"
+    [ "$skipped" -gt 0 ] && echo "  ($skipped file(s) still settling, left for the next run)"
+    exit 0
+fi
+
+subject="journal: $(summarize)"
+if git commit --quiet -m "$subject" -m "$(git diff --cached --name-only | sed 's/^/  /')" 2>/dev/null; then
+    log "$subject"
+else
+    # Nothing actually staged (a race with an interactive commit, say).
+    exit 0
+fi
+
+if (( PUSH )); then
+    if git push --quiet 2>/dev/null; then
+        log "journal: pushed"
+    else
+        log "journal: push FAILED (commit is safe locally; will retry next run)"
+    fi
+fi
