@@ -61,10 +61,14 @@ run agent_message   # noise — must NOT call zdev-notify
 run agent_reasoning # noise — must NOT call zdev-notify
 
 got=$(cat "$calls_file" 2>/dev/null || true)
+# task_started maps to `working`, not `clear`. clear only DELETES the marker,
+# so a codex turn used to carry no working stamp at all — worse than Claude
+# Code, which at least showed working until its stamp decayed. Codex emits
+# nothing per tool, so this is the only hook-sourced working signal it has.
 want="codex done
 codex waiting
 codex waiting
-codex clear"
+codex working"
 
 if [[ "$got" != "$want" ]]; then
   echo "FAIL: zdev-notify invocations mismatch"
