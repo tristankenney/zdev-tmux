@@ -230,11 +230,10 @@ func TestStreamsDoNotExpandWithTheirInitiative(t *testing.T) {
 		if _, hidden := h["alpha/s2/repo-z"]; !hidden {
 			t.Error("alpha/s2/repo-z is a different stream and must stay folded")
 		}
-		// Attending a STREAM is not attending the initiative, so the sibling
-		// stream's header does not come back.
-		if _, hidden := h["alpha/s2"]; !hidden {
-			t.Error("alpha/s2 heads an untouched stream and must stay folded")
-		}
+		// The sibling stream's HEADER does come back (see the sibling-reveal
+		// case below) — attending anywhere inside an initiative shows what
+		// streams it has. Only its members stay folded, which is the
+		// distinction this subtest is about: reveal is not expansion.
 	})
 
 	t.Run("an active member pierces its stream without attendance", func(t *testing.T) {
@@ -258,6 +257,28 @@ func TestStreamsDoNotExpandWithTheirInitiative(t *testing.T) {
 					t.Error("its quiet sibling must still fold")
 				}
 			})
+		}
+	})
+
+	// Reported 2026-09-10: working inside one stream hid every sibling
+	// stream, because the reveal checked the initiative unit's own hold and
+	// attending a stream sets hold on the STREAM unit. From inside bowens's
+	// login stream, trigger was invisible and sdk showed only because it
+	// happened to be waiting.
+	t.Run("attending one stream reveals its sibling stream headers", func(t *testing.T) {
+		s := newS()
+		s.clientSessions = map[string]string{"c1": proto.SessionKey("alpha/s1/repo-x")}
+		h := collapsedNames(s, names)
+		if _, hidden := h["alpha/s2"]; hidden {
+			t.Error("alpha/s2 heads a sibling stream and must be visible from inside alpha/s1")
+		}
+		// Its MEMBERS stay folded — headers are not expansion.
+		if _, hidden := h["alpha/s2/repo-z"]; !hidden {
+			t.Error("the sibling stream's members must stay folded")
+		}
+		// And the attended stream is still expanded.
+		if _, hidden := h["alpha/s1/repo-y"]; hidden {
+			t.Error("the attended stream's own members must be visible")
 		}
 	})
 

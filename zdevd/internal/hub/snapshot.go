@@ -979,17 +979,35 @@ func collapsedNames(st *state, names []string) map[string]struct{} {
 	// only — the stream's members stay folded, which is the whole point of
 	// splitting streams into their own units.
 	//
-	//  1. the initiative is ATTENDED: from inside it you must be able to see
-	//     which streams it has. Folding a quiet stream away completely made
-	//     `observability` vanish from an initiative the operator was working
-	//     in (reported 2026-08-27) — "don't expand" was never "don't exist".
+	//  1. the initiative is ATTENDED — from ANYWHERE inside it, including
+	//     from one of its own streams. Checking only the initiative unit's
+	//     own hold was wrong: attending bowens/login set hold on the
+	//     bowens/login unit, not on bowens, so working inside one stream hid
+	//     every sibling stream (reported 2026-09-10, `trigger` invisible
+	//     while `sdk` showed only because it happened to be waiting).
+	//     "Don't expand" was never "don't exist".
 	//  2. a member survived: otherwise it renders as an orphaned indented row
 	//     with nothing naming the stream it belongs to.
+	//
+	// attendedInitiative answers "is anything inside this initiative
+	// attended", which is what reason 1 actually means. A unit key is either
+	// a bare initiative ("bowens") or a stream ("bowens/login"), so both
+	// forms are recorded.
+	attendedInitiative := make(map[string]bool)
+	for key, g := range groups {
+		if !g.hold {
+			continue
+		}
+		attendedInitiative[key] = true
+		if parent := proto.GroupKey(key); parent != "" {
+			attendedInitiative[parent] = true
+		}
+	}
 	for _, g := range groups {
 		if g.stream == "" {
 			continue
 		}
-		if parent := groups[proto.GroupKey(g.stream)]; parent != nil && parent.hold {
+		if attendedInitiative[proto.GroupKey(g.stream)] {
 			delete(hidden, g.stream)
 			continue
 		}

@@ -142,7 +142,17 @@ func (w *Watcher) sweep() {
 		n++
 	}
 	if n > 0 {
-		slog.Info("notif: replayed tokens at startup", "count", n)
+		// Deliberately reports what was READ, not what was recovered — those
+		// differ and the difference matters. A replayed WORKING stamp is
+		// honored (hookWorkFreshSec is minutes), but a replayed WAIT older
+		// than hookWaitFreshSec (30s) grants no display bypass and defers to
+		// the pane title, which is correct: a stale wait receipt should not
+		// outrank what the agent's pane currently says. Observed 2026-09-10 —
+		// two ~10-minute-old wait tokens replayed into nothing while this
+		// line read like a success.
+		slog.Info("notif: read tokens at startup",
+			"count", n,
+			"note", "waits older than 30s defer to the pane title")
 	}
 }
 
