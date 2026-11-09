@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -67,13 +68,36 @@ func Dial(ctx context.Context) (*Conn, error) {
 // DialWithOptions is the configurable form. Plan 02-08's live integration
 // test passes DialOptions{SocketName: "zdevd-integration-test"} so its
 // `tmux kill-server` cannot affect the user's real tmux state.
+// dialArgs adds -N while the socket exists. A server too busy to accept a
+// connection refuses it, and a server-starting tmux command reads that as a
+// stale socket: it unlinks the live server's socket and starts a second
+// server, orphaning every session in the first.
+func dialArgs(socketName string, socketPresent bool) []string {
+	args := []string{}
+	if socketName != "" {
+		args = append(args, "-L", socketName)
+	}
+	if socketPresent {
+		args = append(args, "-N")
+	}
+	return append(args, "-CC", "new-session", "-A", "-s", "zdevd-watcher")
+}
+
+func socketExists(socketName string) bool {
+	if socketName == "" {
+		socketName = "default"
+	}
+	dir := os.Getenv("TMUX_TMPDIR")
+	if dir == "" {
+		dir = "/tmp"
+	}
+	fi, err := os.Stat(filepath.Join(dir, fmt.Sprintf("tmux-%d", os.Getuid()), socketName))
+	return err == nil && fi.Mode()&os.ModeSocket != 0
+}
+
 func DialWithOptions(ctx context.Context, opts DialOptions) (*Conn, error) {
 	childCtx, cancel := context.WithCancel(ctx)
-	args := []string{}
-	if opts.SocketName != "" {
-		args = append(args, "-L", opts.SocketName)
-	}
-	args = append(args, "-CC", "new-session", "-A", "-s", "zdevd-watcher")
+	args := dialArgs(opts.SocketName, socketExists(opts.SocketName))
 	cmd := exec.CommandContext(childCtx, "tmux", args...)
 	// pty.Start attaches the slave side of a new PTY to the subprocess's
 	// stdin/stdout/stderr (any cmd.Stderr already set is overridden) and
