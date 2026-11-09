@@ -345,6 +345,8 @@ func run() error {
 		os.Exit(0)
 	}()
 
+	go watchForGhost(ctx, spawnServerPID(os.Getenv("TMUX")), serverCheckInterval, stop)
+
 	rs, err := setupRenderer(ctx)
 	if err != nil {
 		return err // ctx cancelled during setup, or an unrecoverable schema mismatch
