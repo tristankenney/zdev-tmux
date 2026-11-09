@@ -230,9 +230,20 @@ is_known_session() {
     return 1
 }
 
+# -N while the socket exists: a busy server refuses connections, and
+# new-session reads that as a stale socket — it unlinks the live server's
+# socket and starts a second server, orphaning every session in the first.
+tmux_new_session() {
+    if [ -S "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default" ]; then
+        tmux -N new-session "$@"
+    else
+        tmux new-session "$@"
+    fi
+}
+
 build_layout() {
     local session="$1" dir="$2"
-    tmux new-session -d -s "$session" -c "$dir" -n dev
+    tmux_new_session -d -s "$session" -c "$dir" -n dev
     # Stamp the session zdev creates so the reaper can prove ownership even
     # if the project is later dropped from the registry (the session tag
     # outlives the projects-file entry). Reaping requires this OR a known
