@@ -6,6 +6,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -224,5 +226,28 @@ func TestResizeClearsTheScreen(t *testing.T) {
 	_, cmd3 := m3.Update(tea.WindowSizeMsg{Width: m3.width})
 	if hasClear(t, cmd3) {
 		t.Errorf("same-width resize must not clear")
+	}
+}
+
+func TestShortPaneWindowsTheFrameAndTheClickMap(t *testing.T) {
+	stubPaintSideEffects(t)
+	snap := quietSnapshot(1)
+	snap.Projects = nil
+	for i := 0; i < 40; i++ {
+		snap.Projects = append(snap.Projects, proto.Project{Name: fmt.Sprintf("p%02d", i), Status: "alive"})
+	}
+	snap.CurrentSession = "p35"
+	m := newTestModel(snap, 50, 1000)
+
+	_, cmd := m.Update(tea.WindowSizeMsg{Width: 50, Height: 15})
+	drainCmd(t, cmd)
+
+	if n := bytes.Count(m.cachedBody, []byte("\n")); n > 14 {
+		t.Fatalf("body is %d lines; a 15-line pane only shows 14 of them", n)
+	}
+	y := rowYFor(t, m, "p35")
+	line := strings.Split(string(m.cachedBody), "\n")[y]
+	if !strings.Contains(line, "p35") {
+		t.Fatalf("click map sends line %d (%q) to p35", y, line)
 	}
 }
