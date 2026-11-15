@@ -75,9 +75,11 @@ type teaModel struct {
 	ctx     context.Context
 	program *tea.Program // set by runTea before p.Run(); Cmds only fire once Run() starts.
 
-	width    int
-	animator *render.Animator
-	snap     *proto.Snapshot
+	width     int
+	height    int
+	scrollTop int
+	animator  *render.Animator
+	snap      *proto.Snapshot
 
 	tickSeq int
 	lastSig render.FrameSig
@@ -194,6 +196,15 @@ func (m *teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
+		if msg.Height > 0 && msg.Height != m.height {
+			m.height = msg.Height
+			if msg.Width <= 0 || msg.Width == m.width {
+				if !m.outage && m.repaintLive() {
+					return m, m.paintSideEffectsCmd()
+				}
+				return m, nil
+			}
+		}
 		if msg.Width <= 0 || msg.Width == m.width {
 			return m, nil
 		}
@@ -367,6 +378,9 @@ func (m *teaModel) repaintLive() bool {
 	// otherwise — see handleMouseMsg), so this is byte-for-byte
 	// render.Body's own output when hover is off or unused.
 	body, rows := render.BodyWithOpts(m.snap, m.width, m.animator, m.nowFn, render.RenderOpts{Hover: m.hovered})
+	// Bubble Tea's inline renderer keeps only the LAST height lines of the
+	// view (the trailing newline counts as one), silently dropping the top.
+	body, rows, m.scrollTop = render.FitHeight(body, rows, m.height-1, render.FocusLine(m.snap, rows), m.scrollTop)
 	changed := !bytes.Equal(body, m.cachedBody)
 	m.cachedBody = body
 	m.cachedRows = rows
