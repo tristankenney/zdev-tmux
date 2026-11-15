@@ -296,6 +296,13 @@ func PlanTopology(v TopoView, cfg TopoConfig, nowUnix int64) []Command {
 			// Untagged: an operator's own window. Invisible to this planner.
 			continue
 		}
+		// The tag lives on the window, so a window linked OUT of its home for
+		// a prompt reads as tagged from home too. Unlinking it there evicts
+		// the window from its own session (and kills a one-window session).
+		if l.OwnedBy == v.ClientSession {
+			present[l.WindowID] = true
+			continue
+		}
 		// A tagged window whose wait is still live stays, and counts as
 		// present so it is not linked twice.
 		if wantedWindow[l.WindowID] && wanted[l.OwnedBy] == l.WindowID {

@@ -103,6 +103,16 @@ func TestPlanTopology(t *testing.T) {
 			want: nil,
 		},
 		{
+			name: "a home window tagged for its own prompt is never unlinked from home",
+			v: TopoView{
+				ClientSession: "agent-a",
+				Links:         []TopoLink{{Index: "1", WindowID: "@1", OwnedBy: "agent-a", LinkedSessions: 2}},
+				Agents:        []TopoAgent{{Session: "agent-a", WindowID: "@1"}},
+			},
+			cfg:  topoCfg(),
+			want: nil,
+		},
+		{
 			name: "never link a window out of the session already in front of you",
 			v: TopoView{
 				ClientSession: "agent-a",
