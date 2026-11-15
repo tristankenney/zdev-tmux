@@ -251,3 +251,63 @@ func TestShortPaneWindowsTheFrameAndTheClickMap(t *testing.T) {
 		t.Fatalf("click map sends line %d (%q) to p35", y, line)
 	}
 }
+
+func tallTeaModel(t *testing.T) *teaModel {
+	t.Helper()
+	stubPaintSideEffects(t)
+	snap := quietSnapshot(1)
+	snap.Projects = nil
+	for i := 0; i < 40; i++ {
+		snap.Projects = append(snap.Projects, proto.Project{Name: fmt.Sprintf("p%02d", i), Status: "alive"})
+	}
+	snap.CurrentSession = "p02"
+	m := newHoverTestModel(snap, 50, 1000)
+	_, cmd := m.Update(tea.WindowSizeMsg{Width: 50, Height: 15})
+	drainCmd(t, cmd)
+	return m
+}
+
+func wheel(t *testing.T, m *teaModel, b tea.MouseButton, times int) {
+	t.Helper()
+	for i := 0; i < times; i++ {
+		_, cmd := m.Update(tea.MouseMsg{X: 5, Y: 5, Button: b, Action: tea.MouseActionPress})
+		drainCmd(t, cmd)
+	}
+}
+
+func TestWheelScrollsTheWindowAndItStaysPut(t *testing.T) {
+	m := tallTeaModel(t)
+	if !strings.Contains(string(m.cachedBody), "p02") {
+		t.Fatalf("focus row not shown initially")
+	}
+	wheel(t, m, tea.MouseButtonWheelDown, 6)
+	if strings.Contains(string(m.cachedBody), "p02") || !strings.Contains(string(m.cachedBody), "p25") {
+		t.Fatalf("wheel did not scroll down:\n%s", m.cachedBody)
+	}
+	y := rowYFor(t, m, "p25")
+	if line := strings.Split(string(m.cachedBody), "\n")[y]; !strings.Contains(line, "p25") {
+		t.Fatalf("click map stale after wheel: line %d is %q", y, line)
+	}
+
+	m.repaintLive()
+	if strings.Contains(string(m.cachedBody), "p02") {
+		t.Fatalf("a repaint snapped the window back to focus")
+	}
+
+	wheel(t, m, tea.MouseButtonWheelUp, 20)
+	if !strings.Contains(string(m.cachedBody), "p00") {
+		t.Fatalf("wheel up did not return to the top:\n%s", m.cachedBody)
+	}
+}
+
+func TestFocusChangeAfterWheelBringsFocusBack(t *testing.T) {
+	m := tallTeaModel(t)
+	wheel(t, m, tea.MouseButtonWheelDown, 6)
+	next := *m.snap
+	next.CurrentSession = "p03"
+	_, cmd := m.Update(teaSnapshotMsg{snap: &next})
+	drainCmd(t, cmd)
+	if !strings.Contains(string(m.cachedBody), "p03") {
+		t.Fatalf("switching session did not bring its row back into view:\n%s", m.cachedBody)
+	}
+}
