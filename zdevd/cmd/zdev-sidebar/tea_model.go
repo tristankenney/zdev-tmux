@@ -78,8 +78,12 @@ type teaModel struct {
 	width     int
 	height    int
 	scrollTop int
-	animator  *render.Animator
-	snap      *proto.Snapshot
+	// wheelFocus is the focus identity when the operator last scrolled by
+	// wheel; while it still matches, the window stays where they put it.
+	wheelFocus string
+	wheeled    bool
+	animator   *render.Animator
+	snap       *proto.Snapshot
 
 	tickSeq int
 	lastSig render.FrameSig
@@ -324,7 +328,12 @@ func (m *teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // for every one of them when the hovered project hasn't changed would undo
 // the entire point of the tea engine's cheaper per-line diffing (see this
 // file's package doc).
+const wheelStep = 3
+
 func (m *teaModel) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action == tea.MouseActionPress && (msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown) {
+		return m.handleWheel(msg.Button == tea.MouseButtonWheelUp)
+	}
 	next := m.resolveHover(msg.Y)
 	if next == m.hovered {
 		return m, nil
@@ -342,6 +351,36 @@ func (m *teaModel) handleMouseMsg(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, m.paintSideEffectsCmd()
 	}
 	return m, nil
+}
+
+func (m *teaModel) handleWheel(up bool) (tea.Model, tea.Cmd) {
+	if m.outage {
+		return m, nil
+	}
+	if up {
+		m.scrollTop -= wheelStep
+	} else {
+		m.scrollTop += wheelStep
+	}
+	if m.scrollTop < 0 {
+		m.scrollTop = 0
+	}
+	m.wheeled = true
+	m.wheelFocus = focusIdentity(m.snap)
+	if m.repaintLive() {
+		return m, m.paintSideEffectsCmd()
+	}
+	return m, nil
+}
+
+func focusIdentity(snap *proto.Snapshot) string {
+	if snap == nil {
+		return ""
+	}
+	if snap.CursorActive {
+		return fmt.Sprintf("cursor:%d", snap.CursorRow)
+	}
+	return "session:" + snap.CurrentSession
 }
 
 // resolveHover maps a mouse event's Y coordinate to the project name whose
@@ -380,7 +419,13 @@ func (m *teaModel) repaintLive() bool {
 	body, rows := render.BodyWithOpts(m.snap, m.width, m.animator, m.nowFn, render.RenderOpts{Hover: m.hovered})
 	// Bubble Tea's inline renderer keeps only the LAST height lines of the
 	// view (the trailing newline counts as one), silently dropping the top.
-	body, rows, m.scrollTop = render.FitHeight(body, rows, m.height-1, render.FocusLine(m.snap, rows), m.scrollTop)
+	focus := render.FocusLine(m.snap, rows)
+	if m.wheeled && focusIdentity(m.snap) == m.wheelFocus {
+		focus = -1
+	} else {
+		m.wheeled = false
+	}
+	body, rows, m.scrollTop = render.FitHeight(body, rows, m.height-1, focus, m.scrollTop)
 	changed := !bytes.Equal(body, m.cachedBody)
 	m.cachedBody = body
 	m.cachedRows = rows
